@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
 import { isHelmfileName, type SourceFile } from './values';
-import { repositoryModel, query as repositoryQuery, isChartField } from './repositories';
+import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
 import { repositoryService } from './repositoryService';
 import { EnvironmentService, repositoryDownloadsEnabled } from './settings';
 
@@ -65,27 +65,65 @@ function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]): void {
     }
 }
 
+/** Characters that make java.net.URI#create throw. */
+const URI_ILLEGAL = /[\s"<>\\^`{}|]/;
+
+/**
+ * Mirrors HelmfileRepositoryInspection: only http(s) URLs require a host.
+ * Scheme-less URLs (e.g. bare OCI registry hosts like quay.io/okdp/charts)
+ * are valid and never flagged.
+ */
+function invalidRepositoryUrl(url: string): boolean {
+    if (URI_ILLEGAL.test(url)) return true;
+    if (!url.startsWith('http:') && !url.startsWith('https:')) return false;
+    try {
+        return new URL(url).hostname === '';
+    } catch {
+        return true;
+    }
+}
+
 function repositoryDiagnostics(source: SourceFile, environment: string, diagnostics: vscode.Diagnostic[]): void {
     const model = repositoryModel(source.uri, environment);
-    const byName = new Map<string, { url: string; oci: boolean }>();
-    for (const entry of model.entries) byName.set(entry.name, { url: entry.access.url, oci: entry.access.oci });
+    const named = new Map(namedMap(model.entries).map(repository => [repository.name, repository]));
 
-    // Declaration-level problems.
-    const seen = new Set<string>();
-    for (const entry of model.entries) {
-        if (!entry.access.url) {
-            diagnostics.push(diagnosticAt(source, entry.targetStart, entry.targetEnd, `Repository '${entry.name}' has no url`, vscode.DiagnosticSeverity.Warning));
-        } else if (entry.access.url.includes('{{')) {
-            // templated URLs cannot be validated
-        } else if (!/^oci:\/\//.test(entry.access.url) && !/^https?:\/\/[^/]+/.test(entry.access.url)) {
-            diagnostics.push(diagnosticAt(source, entry.targetStart, entry.targetEnd, `Repository '${entry.name}' URL has no host`, vscode.DiagnosticSeverity.Warning));
+    // Declaration-level problems for repositories declared in this file.
+    for (const doc of source.tree.docs) {
+        const sequence = mappingGet(doc.root ?? null, 'repositories')?.value;
+        if (!sequence || sequence.kind !== 'sequence') continue;
+        for (const item of sequence.items) {
+            if (!item || item.kind !== 'mapping') continue;
+            const name = value(source, item, 'name');
+            const url = value(source, item, 'url');
+            const namePair = item.pairs.find(pair => pair.key === 'name') ?? null;
+            const urlPair = item.pairs.find(pair => pair.key === 'url') ?? null;
+            if (!name) {
+                diagnostics.push(diagnosticAt(source, item.start, item.end, 'Helm repository requires a name', vscode.DiagnosticSeverity.Warning));
+            } else if (!name.includes('{{') && name.includes('/')) {
+                diagnostics.push(diagnosticAt(source, namePair?.keyStart ?? item.start, namePair?.keyEnd ?? item.end, "Repository name must not contain '/'", vscode.DiagnosticSeverity.Warning));
+            }
+            if (!url) {
+                diagnostics.push(diagnosticAt(source, urlPair?.keyStart ?? item.start, urlPair?.keyEnd ?? item.end, 'Helm repository requires a URL', vscode.DiagnosticSeverity.Warning));
+            }
+            if (!name || name.includes('{{')) continue;
+            if (model.entries.filter(entry => entry.name === name).length > 1) {
+                const start = namePair?.value ? namePair.value.start : namePair?.keyStart ?? item.start;
+                const end = namePair?.value ? namePair.value.end : namePair?.keyEnd ?? item.end;
+                diagnostics.push(diagnosticAt(source, start, end, `Duplicate Helm repository name '${name}'`, vscode.DiagnosticSeverity.Warning));
+            }
+            if (url && !url.includes('{{') && urlPair && invalidRepositoryUrl(url)) {
+                diagnostics.push(diagnosticAt(source, urlPair.keyStart, urlPair.keyEnd, 'Invalid Helm repository URL', vscode.DiagnosticSeverity.Warning));
+            }
+            const repository = named.get(name);
+            if (repository && downloadable(repository.access) && urlPair) {
+                const snapshot = repositoryService().snapshot({ access: repository.access, chart: '' }, false);
+                if (snapshot.error) {
+                    const diagnostic = diagnosticAt(source, urlPair.keyStart, urlPair.keyEnd, snapshot.error, vscode.DiagnosticSeverity.Information);
+                    diagnostic.code = 'helmfile.refreshRepositories';
+                    diagnostics.push(diagnostic);
+                }
+            }
         }
-        if (entry.name.includes('/')) {
-            diagnostics.push(diagnosticAt(source, entry.targetStart, entry.targetEnd, `Repository name '${entry.name}' must not contain '/'`, vscode.DiagnosticSeverity.Warning));
-        } else if (seen.has(entry.name)) {
-            diagnostics.push(diagnosticAt(source, entry.targetStart, entry.targetEnd, `Duplicate repository '${entry.name}'`, vscode.DiagnosticSeverity.Warning));
-        }
-        seen.add(entry.name);
     }
 
     if (model.incomplete) return;
@@ -99,7 +137,7 @@ function repositoryDiagnostics(source: SourceFile, environment: string, diagnost
             if (!isChartField(pair, 'chart') && !isChartField(pair, 'version')) return;
             if (pair.value && pair.value.kind !== 'scalar') return;
             if (isChartField(pair, 'chart')) {
-                checkChart(source, pair, byName, environment, diagnostics);
+                checkChart(source, pair, named, environment, diagnostics);
             } else {
                 checkVersion(source, pair, environment, diagnostics);
             }
@@ -110,43 +148,68 @@ function repositoryDiagnostics(source: SourceFile, environment: string, diagnost
 function checkChart(
     source: SourceFile,
     pair: YPair,
-    byName: Map<string, { url: string; oci: boolean }>,
+    named: Map<string, unknown>,
     environment: string,
     diagnostics: vscode.Diagnostic[],
 ): void {
     const chart = scalarPathText(pair.value);
-    if (!chart || chart.includes('{{') || chart.includes('://') || chart.startsWith('.') || chart.startsWith('/')) return;
-    const slash = chart.indexOf('/');
-    if (slash <= 0) return; // local chart by name
-    const aliasName = chart.slice(0, slash);
-    if (!byName.has(aliasName)) {
-        diagnostics.push(diagnosticAt(source, valueStart(source, pair), valueStart(source, pair) + aliasName.length, `Repository '${aliasName}' is not declared`, vscode.DiagnosticSeverity.Warning));
+    if (!chart || chart.endsWith('/') || chart.includes('{{')) return;
+    const model = repositoryModel(source.uri, environment);
+    const chartAlias = alias(source.uri, chart);
+    if (chartAlias && !named.has(chartAlias) && !model.incomplete) {
+        diagnostics.push(
+            diagnosticAt(
+                source,
+                valueStart(source, pair),
+                valueStart(source, pair) + chart.length,
+                `Repository '${chartAlias}' is not declared in this Helmfile or its bases`,
+                vscode.DiagnosticSeverity.Warning,
+            ),
+        );
+        return;
     }
     const request = repositoryQuery(source.uri, chart, environment);
     if (!request) return;
     const snapshot = repositoryService().snapshot(request, repositoryDownloadsEnabled());
     if (!snapshot.index) return;
-    const name = request.chart;
-    if (name && !snapshot.index.charts.has(name) && !request.access.oci) {
-        diagnostics.push(diagnosticAt(source, valueStart(source, pair) + slash + 1, valueStart(source, pair) + chart.length, `Chart '${name}' is not available in repository '${aliasName}'`, vscode.DiagnosticSeverity.Warning));
+    const name = request.access.oci ? request.chart : chart.slice(chart.indexOf('/') + 1);
+    if (name && !snapshot.index.charts.has(name)) {
+        const diagnostic = diagnosticAt(
+            source,
+            valueStart(source, pair),
+            valueStart(source, pair) + chart.length,
+            `Chart '${name}' was not found in repository '${request.access.name}'`,
+            vscode.DiagnosticSeverity.Warning,
+        );
+        diagnostic.code = 'helmfile.refreshRepositories';
+        diagnostics.push(diagnostic);
     }
 }
 
 function checkVersion(source: SourceFile, pair: YPair, environment: string, diagnostics: vscode.Diagnostic[]): void {
     const version = scalarPathText(pair.value);
-    if (!version || version.includes('{{') || !EXACT_VERSION.test(version)) return;
-    // Find the enclosing item mapping and its chart field.
+    // A Helm constraint such as ~1, ^2.0, 1.x, or >=1.0.0 is not an exact pin.
+    if (!version || !EXACT_VERSION.test(version)) return;
+    // Find the enclosing item mapping and resolve its chart (inherit included).
     const mapping = pair.parent;
     if (!mapping || mapping.kind !== 'mapping') return;
-    const chartPair = mappingGet(mapping, 'chart');
-    const chart = chartPair ? scalarPathText(chartPair.value) : '';
+    const chart = chartOf(source, mapping, environment, new Set());
     if (!chart || chart.includes('{{') || !chart.includes('/')) return;
     const request = repositoryQuery(source.uri, chart, environment);
-    if (!request || !request.chart) return;
+    if (!request) return;
     const snapshot = repositoryService().snapshot(request, repositoryDownloadsEnabled());
     if (!snapshot.index) return;
-    if (!snapshot.index.containsVersion(request.chart, version)) {
-        diagnostics.push(diagnosticAt(source, valueStart(source, pair), valueStart(source, pair) + version.length, `Version '${version}' of chart '${request.chart}' is not available`, vscode.DiagnosticSeverity.Warning));
+    const name = request.access.oci ? request.chart : chart.slice(chart.indexOf('/') + 1);
+    if (snapshot.index.charts.has(name) && !snapshot.index.containsVersion(name, version)) {
+        const diagnostic = diagnosticAt(
+            source,
+            valueStart(source, pair),
+            valueStart(source, pair) + version.length,
+            `Version '${version}' was not found for chart '${chart}'`,
+            vscode.DiagnosticSeverity.Warning,
+        );
+        diagnostic.code = 'helmfile.refreshRepositories';
+        diagnostics.push(diagnostic);
     }
 }
 

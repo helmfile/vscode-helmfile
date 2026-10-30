@@ -7,7 +7,7 @@ import { closeOpenDocument, isHelmfileName, readSource, setOpenDocument, stateFo
 import { HelmfileCompletionProvider } from './completion';
 import { HelmfileDefinitionProvider, HelmfileReferencesProvider } from './references';
 import { HelmfileHoverProvider } from './hover';
-import { HelmfileDiagnostics } from './inspection';
+import { HelmfileDiagnostics, HELMFILE_DIAGNOSTIC_SOURCE } from './inspection';
 import { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT, HELMFILE_GOTO_TEMPLATE_PARENT, HELMFILE_FIND_TEMPLATE_USAGES } from './codeLens';
 import { ChartSourceService } from './chartNavigation';
 import { repositoryService, type RepositoryQuery } from './repositoryService';
@@ -42,6 +42,17 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.languages.registerReferenceProvider(HELMFILE_SELECTOR, references),
         vscode.languages.registerHoverProvider(HELMFILE_SELECTOR, hover),
         vscode.languages.registerCodeLensProvider(HELMFILE_SELECTOR, lenses),
+        vscode.languages.registerCodeActionsProvider(HELMFILE_SELECTOR, {
+            provideCodeActions(_document, _range, context) {
+                const needsRefresh = context.diagnostics.some(
+                    diagnostic => diagnostic.source === HELMFILE_DIAGNOSTIC_SOURCE && diagnostic.code === 'helmfile.refreshRepositories',
+                );
+                if (!needsRefresh) return [];
+                const action = new vscode.CodeAction('Refresh Helm chart repositories', vscode.CodeActionKind.QuickFix);
+                action.command = { command: 'helmfile.refreshRepositories', title: 'Refresh Helm chart repositories' };
+                return [action];
+            },
+        }),
         diagnostics,
         vscode.window.registerTreeDataProvider('helmfile.charts', charts),
     );
