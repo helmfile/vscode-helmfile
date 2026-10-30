@@ -41,6 +41,7 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     analyze(document: vscode.TextDocument): void {
         const text = document.getText();
         const diagnostics: vscode.Diagnostic[] = [];
+        yamlSyntaxErrors(document, diagnostics);
         unclosedActions(text, diagnostics);
         repositoryDiagnostics({ uri: document.uri, text, tree: parseTree(text) }, this.env.get(), diagnostics);
         this.collection.set(document.uri, diagnostics);
@@ -61,6 +62,22 @@ function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]): void {
         if (action.closed) continue;
         diagnostics.push(
             new vscode.Diagnostic(range(text, action.start, text.length), 'Unclosed Go template action: expected }}', vscode.DiagnosticSeverity.Warning),
+        );
+    }
+}
+
+/**
+ * Genuine YAML syntax errors, reported as red squiggles. The document is
+ * parsed with Go template actions masked out (equal-length spaces), so
+ * valid `{{ ... }}` blocks are not misread as YAML flow mappings.
+ */
+function yamlSyntaxErrors(document: vscode.TextDocument, diagnostics: vscode.Diagnostic[]): void {
+    const masked = TemplateScanner.mask(document.getText());
+    for (const error of parseTree(masked).errors) {
+        const start = Math.min(Math.max(0, error.offset), masked.length);
+        const end = Math.min(Math.max(start + 1, error.end), masked.length);
+        diagnostics.push(
+            new vscode.Diagnostic(new vscode.Range(document.positionAt(start), document.positionAt(end)), error.message, vscode.DiagnosticSeverity.Error),
         );
     }
 }

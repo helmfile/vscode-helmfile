@@ -59,21 +59,37 @@ export interface YDoc {
 
 export interface YTree {
     readonly docs: YDoc[];
+    /** Parse errors collected from every document (offsets are text offsets). */
+    readonly errors: readonly YTreeError[];
+}
+
+export interface YTreeError {
+    readonly message: string;
+    readonly offset: number;
+    readonly end: number;
 }
 
 export function parseTree(text: string): YTree {
+    const errors: YTreeError[] = [];
     let documents: Document.Parsed[];
     try {
         documents = parseAllDocuments(text, { logLevel: 'silent', strict: false });
-    } catch {
-        return { docs: [] };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { docs: [{ root: null, start: 0, end: text.length }], errors: [{ message, offset: 0, end: text.length }] };
     }
     const docs: YDoc[] = [];
     for (const doc of documents) {
+        for (const problem of doc.errors) {
+            const pos = (problem as { pos?: [number, number] }).pos;
+            const start = pos?.[0] ?? doc.range?.[0] ?? 0;
+            const end = pos?.[1] ?? start;
+            errors.push({ message: problem.message, offset: start, end: end > start ? end : start + 1 });
+        }
         const root = doc.contents ? buildNode(doc.contents, text, null, new Set<Node>(), doc) : null;
         docs.push({ root, start: root?.start ?? 0, end: root?.end ?? text.length });
     }
-    return { docs: docs.length ? docs : [{ root: null, start: 0, end: text.length }] };
+    return { docs: docs.length ? docs : [{ root: null, start: 0, end: text.length }], errors };
 }
 
 export function buildNode(node: Node, text: string, parent: TreeNode | null, visiting: Set<Node>, doc?: Document): YNode {
