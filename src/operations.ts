@@ -20,7 +20,7 @@ import {
     type HelmfileCommandSpec,
     type HelmfileOperationKind,
 } from './execution';
-import { OutputViewer, parseDiffOutput, parseTemplateOutput } from './outputs';
+import { OutputViewer, parseDiffOutput, parseTemplateOutput, diffPartial } from './outputs';
 import { declarationAt, literal } from './releaseTarget';
 
 const OPERATION_LABELS: Record<HelmfileOperationKind, string> = {
@@ -177,14 +177,19 @@ async function continueApply(command: HelmfileCommandSpec, reviewedMtime: number
 
 async function showDiffResult(viewer: OutputViewer, stdout: string, command: HelmfileCommandSpec, review?: () => Promise<void>): Promise<void> {
     const parsed = parseDiffOutput(stdout);
-    if (parsed.empty || parsed.resources.length === 0) {
+    if (parsed.resources.length === 0) {
         if (stdout.trim().length > 0) {
-            void vscode.window.showWarningMessage('Helmfile: the diff output could not be parsed; showing the raw output.');
+            void vscode.window.showWarningMessage('Helmfile: the diff output could not be parsed; showing the raw output in the Helmfile output channel.');
+            channel().appendLine(stdout);
         }
         void vscode.window.showInformationMessage(`Helmfile: no changes for ${command.release || 'all releases'} (${command.environment}).`);
         return;
     }
-    await viewer.showDiff(parsed, command.environment, review ? { command: 'Apply reviewed changes', run: review } : undefined);
+    if (diffPartial(parsed)) {
+        void vscode.window.showWarningMessage('Helmfile: the comparison is partial; some output could not be parsed.');
+    }
+    const scope = command.release ? `release ${command.release}${command.namespace ? `, namespace ${command.namespace}` : ''}` : 'all releases';
+    await viewer.showDiff(parsed, scope, command.environment, review ? { command: 'Apply reviewed changes', run: review } : undefined);
 }
 
 function activeStateFile(): vscode.Uri | undefined {

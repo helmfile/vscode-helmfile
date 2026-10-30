@@ -8,6 +8,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
+import * as tls from 'node:tls';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Access } from './repositories';
@@ -277,26 +278,26 @@ async function agentFor(uri: URL, options: https.RequestOptions): Promise<http.A
 }
 
 function loadProxyAgent(): Promise<(protocol: string) => http.Agent | undefined> {
-    const proxy = vscode.workspace.getConfiguration('http').get<string>('proxy') ?? '';
-    const strictSsl = vscode.workspace.getConfiguration('http').get<boolean>('proxyStrictSSL', true);
+    const config = vscode.workspace.getConfiguration('http');
+    const configured = config.get<string>('proxy') ?? '';
+    // VSCode falls back to the environment when http.proxy is unset (http.proxySupport).
+    const fromEnv = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.ALL_PROXY ?? process.env.all_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy ?? '';
+    const proxy = configured || fromEnv;
+    const strictSsl = config.get<boolean>('proxyStrictSSL', true);
     if (!proxy) return Promise.resolve(() => undefined);
     const parsed = new URL(proxy.includes('://') ? proxy : 'http://' + proxy);
-    const agent = new ProxyTunnelAgent(parsed, strictSsl);
-    (agent as unknown as { proxyHost: string; proxyPort: number }).proxyHost = parsed.hostname;
-    (agent as unknown as { proxyHost: string; proxyPort: number }).proxyPort = Number(parsed.port || 80);
+    const agent = new ProxyTunnelAgent(parsed.hostname, Number(parsed.port || 80), strictSsl);
     return Promise.resolve((protocol: string) => (protocol === 'https:' ? agent : undefined));
 }
 
 /**
  * HTTPS agent that tunnels through an HTTP proxy with CONNECT, honoring the
- * user's http.proxy / http.proxyStrictSSL settings.
- */
-/**
- * HTTPS agent that tunnels through an HTTP proxy with CONNECT, honoring the
- * user's http.proxy / http.proxyStrictSSL settings.
+ * user's http.proxy / http.proxyStrictSSL settings and HTTPS_PROXY variables.
+ * https.Agent delegates the TLS handshake to createConnection, so the tunnel
+ * socket is wrapped here before it is handed back.
  */
 class ProxyTunnelAgent extends https.Agent {
-    constructor(proxy: URL, strictSsl: boolean) {
+    constructor(private readonly proxyHost: string, private readonly proxyPort: number, private readonly strictSsl: boolean) {
         super({ rejectUnauthorized: strictSsl });
     }
 
@@ -304,23 +305,47 @@ class ProxyTunnelAgent extends https.Agent {
         if (!callback) return null;
         const host = String(options.host ?? options.hostname ?? '');
         const port = Number(options.port ?? 443);
-        const proxyHost = (options.agent as { proxyHost?: string } | undefined)?.proxyHost;
-        const proxyPort = (options.agent as { proxyPort?: number } | undefined)?.proxyPort;
-        const socket = net.connect({ host: proxyHost ?? '127.0.0.1', port: proxyPort ?? 8080 });
-        socket.on('connect', () => {
+        const servername = String((options as tls.ConnectionOptions).servername ?? host);
+        const socket = net.connect({ host: this.proxyHost, port: this.proxyPort });
+        const fail = (error: Error): void => {
+            socket.destroy();
+            callback(error, undefined as never);
+        };
+        socket.once('error', fail);
+        socket.once('connect', () => {
             socket.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
         });
-        socket.once('data', (chunk: Buffer) => {
-            const header = chunk.toString('utf8');
-            const statusLine = header.split('\r\n')[0] ?? '';
-            if (/\s2\d\d\s*$/.test(statusLine)) {
-                callback(null, socket);
-            } else {
-                socket.destroy();
-                callback(new Error('Proxy CONNECT failed: ' + statusLine), undefined as never);
+        // The CONNECT response may arrive in several TCP chunks; only after the
+        // blank line is the tunnel established and TLS may start.
+        let header = '';
+        const onResponse = (chunk: Buffer): void => {
+            header += chunk.toString('utf8');
+            if (!header.includes('\r\n\r\n')) {
+                if (header.length > 8192) fail(new Error('Proxy CONNECT response too large'));
+                return;
             }
-        });
-        socket.once('error', (error: Error) => callback(error, undefined as never));
-        return socket;
+            socket.removeListener('data', onResponse);
+            socket.removeListener('error', fail);
+            socket.pause();
+            const statusLine = header.substring(0, header.indexOf('\r\n'));
+            const statusCode = /^HTTP\/\d(?:\.\d)?\s+(\d{3})/.exec(statusLine)?.[1];
+            if (!statusCode || Number(statusCode) < 200 || Number(statusCode) > 299) {
+                fail(new Error('Proxy CONNECT failed: ' + statusLine));
+                return;
+            }
+            const tlsSocket = tls.connect(
+                { socket, servername, rejectUnauthorized: this.strictSsl },
+                () => callback(null, tlsSocket),
+            );
+            tlsSocket.once('error', (error: Error) => {
+                tlsSocket.destroy();
+                callback(error, undefined as never);
+            });
+        };
+        socket.on('data', onResponse);
+        // The connection must only be delivered through the callback: returning
+        // the raw socket synchronously would make node treat it as the final
+        // (TLS) request socket.
+        return null;
     }
 }

@@ -103,27 +103,20 @@ function buildPair(pair: Pair, text: string, parent: YMapping, visiting: Set<Nod
     const valueRange = value?.range;
     const valueStart = valueRange ? valueRange[0] : keyRange[1];
     const valueEnd = valueRange ? Math.max(valueRange[1], valueRange[2]) : keyRange[1];
-    const valueNode = value ? buildNode(value, text, null, visiting, doc) : null;
     const node: YPair = {
         kind: 'pair',
         key: scalarKey(key),
         keyStart: keyRange[0],
         keyEnd: Math.max(keyRange[1], keyRange[2]),
-        value: valueNode,
+        value: null,
         valueStart,
         valueEnd,
         start: keyRange[0],
         end: Math.max(keyRange[1], keyRange[2], valueEnd),
         parent,
     };
-    if (valueNode) adopt(valueNode, node);
+    if (value) (node as { value: YNode | null }).value = buildNode(value, text, node, visiting, doc);
     return node;
-}
-
-function adopt(node: YNode, parent: TreeNode): void {
-    (node as { parent?: TreeNode | null }).parent = parent;
-    if (node.kind === 'mapping') for (const pair of node.pairs) adopt(pair as unknown as YNode, pair);
-    else if (node.kind === 'sequence') for (const item of node.items) adopt(item, node);
 }
 
 function resolveAlias(alias: Alias, doc: Document, visiting: Set<Node>): Node {
@@ -197,12 +190,18 @@ export function walk<T>(node: TreeNode, visit: (node: TreeNode) => T | null): T 
         for (const pair of node.pairs) {
             const found = walk(pair, visit);
             if (found != null) return found;
+            if (pair.value) {
+                const nested = walk(pair.value, visit);
+                if (nested != null) return nested;
+            }
         }
     } else if (node.kind === 'sequence') {
         for (const item of node.items) {
             const found = walk(item, visit);
             if (found != null) return found;
         }
+    } else if (node.kind === 'pair' && node.value) {
+        return walk(node.value, visit);
     }
     return null;
 }
