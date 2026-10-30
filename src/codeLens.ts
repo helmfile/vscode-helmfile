@@ -8,7 +8,7 @@ import { mappingGet, parseTree, walkAll, type YPair } from './yamlTree';
 import type { SourceFile } from './values';
 import { isDeclaration as isTemplateDeclaration, inheritanceScalars } from './templates';
 import { isRelease } from './releaseTarget';
-import { EnvironmentService } from './settings';
+import { EnvironmentService, mutatingCommandsEnabled } from './settings';
 
 export const HELMFILE_SELECT_ENVIRONMENT = 'helmfile.selectEnvironment';
 export const HELMFILE_GOTO_TEMPLATE_PARENT = 'helmfile.gotoTemplateParent';
@@ -65,7 +65,11 @@ export class HelmfileCodeLensProvider implements vscode.CodeLensProvider {
                 const pair = node as YPair;
                 if (!isRelease(pair)) return;
                 const at = new vscode.Range(document.positionAt(pair.keyStart), document.positionAt(pair.keyStart));
-                for (const operation of RELEASE_OPERATIONS) {
+                // Mutating operations (Apply/Destroy) are hidden until the user opts in via settings.
+                const operations = mutatingCommandsEnabled()
+                    ? RELEASE_OPERATIONS
+                    : RELEASE_OPERATIONS.filter(operation => operation.command !== 'helmfile.applyRelease' && operation.command !== 'helmfile.destroyRelease');
+                for (const operation of operations) {
                     lenses.push(
                         new vscode.CodeLens(at, {
                             title: `$(${operation.icon}) ${operation.label}`,

@@ -6,7 +6,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { EnvironmentService, settings } from './settings';
+import { EnvironmentService, mutatingCommandsEnabled, settings } from './settings';
 import { environmentNames, isHelmfileName, readSource } from './values';
 import {
     buildCommand,
@@ -33,6 +33,18 @@ const OPERATION_LABELS: Record<HelmfileOperationKind, string> = {
 const templateViewer = new OutputViewer('template');
 const diffViewer = new OutputViewer('diff');
 
+/** True (after warning the user) when a mutating operation is blocked by settings. */
+async function mutatingBlocked(operation: HelmfileOperationKind): Promise<boolean> {
+    if (operation !== 'apply' && operation !== 'destroy') return false;
+    if (mutatingCommandsEnabled()) return false;
+    const choice = await vscode.window.showWarningMessage(
+        `Helmfile: ${OPERATION_LABELS[operation]} changes the cluster and is disabled by default. Enable "helmfile.enableMutatingCommands" in settings to use it.`,
+        'Open Settings',
+    );
+    if (choice === 'Open Settings') void vscode.commands.executeCommand('workbench.action.openSettings', 'helmfile.enableMutatingCommands');
+    return true;
+}
+
 /** Tools → Helmfile: Select Environment. */
 export async function selectEnvironment(env: EnvironmentService, uri?: vscode.Uri): Promise<void> {
     const target = uri ?? activeStateFile();
@@ -45,6 +57,7 @@ export async function selectEnvironment(env: EnvironmentService, uri?: vscode.Ur
 
 /** Run an operation against a release (targeted from the editor when available). */
 export async function runReleaseOperation(env: EnvironmentService, operation: HelmfileOperationKind, wholeState: boolean, uri?: vscode.Uri, offset?: number): Promise<void> {
+    if (await mutatingBlocked(operation)) return;
     const target = wholeState ? null : releaseTargetAt(uri ?? activeStateFile(), offset);
     const stateFile = (uri ?? activeStateFile())?.fsPath;
     if (!stateFile) {
@@ -98,6 +111,7 @@ async function collectInputs(env: EnvironmentService, uri: vscode.Uri, operation
 
 /** Port of HelmfileExecution.start() including diff-first apply review. */
 async function execute(command: HelmfileCommandSpec): Promise<void> {
+    if (await mutatingBlocked(command.operation)) return;
     const problem = commandProblem(command) ?? protectionProblem(settings().protectedEnvironments);
     if (problem) {
         void vscode.window.showErrorMessage(`Helmfile: ${problem}`);

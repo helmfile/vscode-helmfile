@@ -76,10 +76,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // Repository metadata changes refresh diagnostics.
     context.subscriptions.push(repositoryService().onChanged(() => diagnostics.refreshAll()));
 
-    // Settings changes re-run diagnostics.
+    // Settings changes re-run diagnostics and refresh lenses (mutating-operation visibility depends on settings).
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(event => {
-            if (event.affectsConfiguration('helmfile')) diagnostics.refreshAll();
+            if (event.affectsConfiguration('helmfile')) {
+                diagnostics.refreshAll();
+                lenses.fire();
+            }
         }),
     );
 

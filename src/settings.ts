@@ -22,6 +22,15 @@ export function repositoryDownloadsEnabled(): boolean {
 }
 
 /**
+ * Mutating operations (apply/destroy) are opt-in: they change the cluster,
+ * so their commands and code lenses stay disabled until the user enables
+ * `helmfile.enableMutatingCommands`.
+ */
+export function mutatingCommandsEnabled(): boolean {
+    return vscode.workspace.getConfiguration('helmfile').get<boolean>('enableMutatingCommands') ?? false;
+}
+
+/**
  * The active Helmfile environment, saved per workspace like the IntelliJ
  * plugin's project-level setting.
  */

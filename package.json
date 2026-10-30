@@ -85,6 +85,11 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Disable automatic chart repository downloads (index/tag metadata used by completion and validation)."
+        },
+        "helmfile.enableMutatingCommands": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Enable the mutating commands (Apply Release…, Destroy Release…) and their code lenses. They change the cluster state, so they stay hidden and are refused until you opt in."
         }
       }
     },

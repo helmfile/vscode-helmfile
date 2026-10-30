@@ -95,6 +95,7 @@ with feature parity.
 | `helmfile.helmExecutablePath` | `helm` | Path to `helm` (chart source browsing) |
 | `helmfile.protectedEnvironments` | `prod.*` | Regex (full match) of protected environments |
 | `helmfile.disableAutomaticDownloads` | `false` | Disable repository metadata downloads |
+| `helmfile.enableMutatingCommands` | `false` | Enable the mutating commands (Apply/Destroy) and their code lenses; hidden and refused until enabled |
 
 HTTP(S) access honors VSCode's `http.proxy` setting.
 
