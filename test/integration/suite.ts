@@ -81,7 +81,7 @@ async function main(): Promise<void> {
     //    a broken YAML indent: tracked documents must report both.
     const fs = await import('node:fs');
     const scratch = path.join(examplesDir, 'helmfile-diag-check.yaml.gotmpl');
-    fs.writeFileSync(scratch, text + '\n  - name: zz\n    chart: {{ if .Values.x }} {{ .Values.y\n');
+    fs.writeFileSync(scratch, text + '\n  - name: zz\n    routerInstances:  .Values | get "mysql.routerInstances" 2 }}\n    chart: {{ if .Values.x }} {{ .Values.y\n');
     try {
         const scratchUri = vscode.Uri.file(scratch);
         const sdoc = await vscode.workspace.openTextDocument(scratchUri);
@@ -90,6 +90,7 @@ async function main(): Promise<void> {
         const scratchDiags = vscode.languages.getDiagnostics(scratchUri);
         check('unclosed {{ warned', scratchDiags.some(d => d.message.includes('Unclosed Go template action')), JSON.stringify(scratchDiags.map(d => d.message.slice(0, 40))));
         check('unclosed block warned', scratchDiags.some(d => d.message.includes('Unclosed Go template block')), JSON.stringify(scratchDiags.map(d => d.message.slice(0, 40))));
+        check('orphan }} warned', scratchDiags.some(d => d.message.includes('Unmatched Go template closing')), JSON.stringify(scratchDiags.map(d => d.message.slice(0, 40))));
     } finally {
         fs.unlinkSync(scratch);
     }
