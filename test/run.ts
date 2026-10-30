@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
+import { templateBlocks, unclosedActions } from '../src/inspection';
 import { allFunctions, findFunction } from '../src/functionCatalog';
 import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
 import { repositoryModel, query, alias } from '../src/repositories';
@@ -258,6 +259,37 @@ entries:
     bumpContentVersion();
     const model = valuesModel(STATE, 'prod')!;
     check('model rebuilt after bump', model !== before);
+}
+
+// ---------------------------------------------------------------- template blocks
+{
+    const actions = (text: string): { message: string }[] => {
+        const out: { message: string }[] = [];
+        unclosedActions(text, out as vscode.Diagnostic[]);
+        return out;
+    };
+    eq(actions('{{}}').length, 1, 'empty action {{}} flagged');
+    eq(actions('{{ }}').length, 1, 'blank action {{ }} flagged');
+    eq(actions('{{- -}}').length, 1, 'trim-marker blank action flagged');
+    check('empty action message', actions('{{ .x }}').length === 0 && actions('{{}}')[0].message.includes('Empty'), 'non-empty actions pass');
+    const blocks = (text: string): { message: string }[] => {
+        const out: { message: string }[] = [];
+        templateBlocks(text, out as vscode.Diagnostic[]);
+        return out;
+    };
+    eq(blocks('{{ if .Values.a }}x{{ end }}').length, 0, 'balanced if/end');
+    eq(blocks('{{ range $i, $v := .list }}{{ else }}{{ end }}').length, 0, 'range with else');
+    eq(blocks('{{ if .a }}{{ else if .b }}y{{ end }}').length, 0, 'else if reuses end');
+    eq(blocks('{{ define "x" }}{{ end }}{{ block "y" . }}{{ end }}').length, 0, 'define and block');
+    eq(blocks('{{ with .a }}{{ end }}{{/* comment */}}').length, 0, 'with + comment action');
+    const unclosed = blocks('{{ if .Values.a }}x');
+    check('unclosed if flagged', unclosed.length === 1 && unclosed[0].message.includes('Unclosed Go template block'), JSON.stringify(unclosed));
+    const strayEnd = blocks('plain text {{ end }}');
+    check('stray end flagged', strayEnd.length === 1 && strayEnd[0].message.includes('without a matching'), JSON.stringify(strayEnd));
+    const strayElse = blocks('{{ define "x" }}{{ else }}{{ end }}');
+    check('else outside if/range/with flagged', strayElse.length === 1 && strayElse[0].message.includes('outside of an'), JSON.stringify(strayElse));
+    eq(blocks('{{ if .a').length, 0, 'unclosed action not double-reported as block');
+    eq(blocks('{{ if .a }}x{{ end }} tail').length, 0, 'balanced with trailing text');
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
