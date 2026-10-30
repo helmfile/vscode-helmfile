@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit tests (mocked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc -p ./ --noEmit
+      - name: Bundle extension
+        run: npm run compile
+      - name: Unit tests
+        run: |
+          npx esbuild test/run.ts --bundle --platform=node --format=cjs \
+            --alias:vscode=./test/vscode-mock.ts --outfile=out/test.js --log-level=warning
+          node out/test.js
+
+  integration:
+    name: Integration tests (real VSCode)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Bundle extension + suite
+        run: |
+          npm run compile
+          npx esbuild test/integration/suite.ts --bundle --platform=node --format=cjs \
+            --external:vscode --outfile=test/integration/suite.js --log-level=warning
+      - name: Cache VSCode test build
+        uses: actions/cache@v4
+        with:
+          path: ~/.vscode-test
+          key: vscode-test-${{ runner.os }}-stable
+      - name: Run integration tests
+        run: xvfb-run -a node test/integration/run.js
+        env:
+          CI: '1'
+
+  package:
+    name: Package (vsce)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: vsce package
+        run: npx vsce package --no-dependencies -o vscode-helmfile.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-helmfile-vsix
+          path: vscode-helmfile.vsix
