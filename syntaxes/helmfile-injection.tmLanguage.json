@@ -1,0 +1,75 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "source.helmfile.injection",
+  "injectionSelector": "L:string, L:meta.embedded.line, L:comment.line, L:text",
+  "patterns": [
+    { "include": "#action" }
+  ],
+  "repository": {
+    "action": {
+      "name": "meta.action.helmfile",
+      "begin": "\\{\\{-?",
+      "end": "-?\\}\\}",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.action.begin.helmfile" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.action.end.helmfile" }
+      },
+      "patterns": [
+        { "include": "#string-double" },
+        { "include": "#string-single" },
+        { "include": "#action-keyword" },
+        { "include": "#action-constant" },
+        { "include": "#action-number" },
+        { "include": "#action-path" },
+        { "include": "#action-variable" },
+        { "include": "#action-helmfile-function" },
+        { "include": "#action-sprig-function" },
+        { "include": "#action-go-function" }
+      ]
+    },
+    "action-keyword": {
+      "match": "\\b(?:if|else|end|range|with|define|template|block|break|continue)\\b",
+      "name": "keyword.control.go-template.helmfile"
+    },
+    "action-constant": {
+      "match": "\\b(?:true|false|nil)\\b",
+      "name": "constant.language.go-template.helmfile"
+    },
+    "action-number": {
+      "match": "-?\\b\\d+(?:\\.\\d+)?\\b",
+      "name": "constant.numeric.go-template.helmfile"
+    },
+    "action-path": {
+      "match": "\\B(?:\\.\\$?|\\$\\.)(?:[A-Za-z_][A-Za-z0-9_]*\\.?)+",
+      "name": "variable.other.field.go-template.helmfile"
+    },
+    "action-variable": {
+      "match": "\\$[A-Za-z_][A-Za-z0-9_]*",
+      "name": "variable.other.readwrite.go-template.helmfile"
+    },
+    "action-helmfile-function": {
+      "match": "\\b(?:env|requiredEnv|readFile|readDir|readDirEntries|isFile|isDir|exec|envExec|toYaml|fromYaml|setValueAtPath|get|getOrNil|tpl|required|include|fetchSecretValue|expandSecretRefs)\\b",
+      "name": "support.function.helmfile.helmfile"
+    },
+    "action-sprig-function": {
+      "match": "\\b(?:add|append|b64dec|b64enc|base|concat|contains|deepCopy|default|dig|dir|div|empty|fail|first|fromJson|hasKey|hasPrefix|hasSuffix|indent|int|join|keys|last|list|lower|merge|mergeOverwrite|mul|nindent|quote|regexMatch|replace|rest|semverCompare|sha256sum|sortAlpha|splitList|squote|sub|ternary|title|toString|trim|trimPrefix|trimSuffix|trunc|uniq|upper)\\b",
+      "name": "support.function.sprig.go-template.helmfile"
+    },
+    "action-go-function": {
+      "match": "\\b(?:and|eq|ge|gt|index|le|len|lt|ne|not|or|print|printf|println|slice)\\b",
+      "name": "support.function.builtin.go-template.helmfile"
+    },
+    "string-double": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.helmfile"
+    },
+    "string-single": {
+      "begin": "'",
+      "end": "'",
+      "name": "string.quoted.single.helmfile"
+    }
+  }
+}

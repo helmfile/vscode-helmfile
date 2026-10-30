@@ -1,0 +1,245 @@
+{
+  "name": "vscode-helmfile",
+  "displayName": "Helmfile",
+  "description": "Helmfile state file editing: completion, navigation, repository awareness, environments, and Template/Diff/Apply/Destroy",
+  "version": "0.1.0",
+  "publisher": "helmfile-dev",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/helmfile/vscode-helmfile"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Other"
+  ],
+  "keywords": [
+    "helmfile",
+    "helm",
+    "kubernetes",
+    "gotemplate",
+    "yaml"
+  ],
+  "activationEvents": [
+    "onLanguage:helmfile",
+    "onCommand:helmfile.selectEnvironment",
+    "onCommand:helmfile.refreshRepositories",
+    "onCommand:helmfile.diffAllReleases",
+    "onCommand:helmfile.templateRelease",
+    "onCommand:helmfile.diffRelease",
+    "onCommand:helmfile.applyRelease",
+    "onCommand:helmfile.destroyRelease",
+    "onView:helmfile.charts",
+    "onCommand:helmfile.openChartSource"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "helmfile",
+        "aliases": [
+          "Helmfile",
+          "helmfile"
+        ],
+        "filenames": [
+          "helmfile.yaml",
+          "helmfile.yml"
+        ],
+        "extensions": [
+          ".gotmpl"
+        ],
+        "filenamePatterns": [
+          "_*.tpl",
+          "helmfile*.yaml.gotmpl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "helmfile",
+        "scopeName": "source.helmfile",
+        "path": "./syntaxes/helmfile.tmLanguage.json"
+      },
+      {
+        "injectTo": [
+          "source.yaml"
+        ],
+        "scopeName": "source.helmfile.injection",
+        "path": "./syntaxes/helmfile-injection.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Helmfile",
+      "properties": {
+        "helmfile.helmfileExecutablePath": {
+          "type": "string",
+          "default": "helmfile",
+          "markdownDescription": "Path to the `helmfile` executable. Relative names are resolved from `PATH`."
+        },
+        "helmfile.helmExecutablePath": {
+          "type": "string",
+          "default": "helm",
+          "markdownDescription": "Path to the `helm` executable, used for browsing Helm chart sources."
+        },
+        "helmfile.protectedEnvironments": {
+          "type": "string",
+          "default": "prod.*",
+          "markdownDescription": "Regular expression (case-sensitive, full match) of protected environment names. Every Helmfile operation on a matching environment asks for confirmation. Empty disables protection."
+        },
+        "helmfile.disableAutomaticDownloads": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Disable automatic chart repository downloads (index/tag metadata used by completion and validation)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "helmfile.selectEnvironment",
+        "title": "Helmfile: Select Environment",
+        "category": "Helmfile"
+      },
+      {
+        "command": "helmfile.refreshRepositories",
+        "title": "Helmfile: Refresh Chart Repositories",
+        "category": "Helmfile"
+      },
+      {
+        "command": "helmfile.diffAllReleases",
+        "title": "Helmfile: Diff All Releases…",
+        "category": "Helmfile"
+      },
+      {
+        "command": "helmfile.templateRelease",
+        "title": "Helmfile: Template Release…",
+        "category": "Helmfile"
+      },
+      {
+        "command": "helmfile.diffRelease",
+        "title": "Helmfile: Diff Release…",
+        "category": "Helmfile"
+      },
+      {
+        "command": "helmfile.applyRelease",
+        "title": "Helmfile: Apply Release…",
+        "category": "Helmfile"
+      },
+      {
+        "command": "helmfile.destroyRelease",
+        "title": "Helmfile: Destroy Release…",
+        "category": "Helmfile"
+      },
+      {
+        "command": "helmfile.openChartSource",
+        "title": "Open Chart Source",
+        "category": "Helmfile"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "helmfile.templateRelease",
+          "when": "editorLangId == helmfile"
+        },
+        {
+          "command": "helmfile.diffRelease",
+          "when": "editorLangId == helmfile"
+        },
+        {
+          "command": "helmfile.applyRelease",
+          "when": "editorLangId == helmfile"
+        },
+        {
+          "command": "helmfile.destroyRelease",
+          "when": "editorLangId == helmfile"
+        },
+        {
+          "command": "helmfile.openChartSource",
+          "when": "editorLangId == helmfile"
+        }
+      ],
+      "editor/context": [
+        {
+          "submenu": "helmfile.releaseActions",
+          "group": "navigation",
+          "when": "editorLangId == helmfile"
+        },
+        {
+          "command": "helmfile.openChartSource",
+          "group": "navigation",
+          "when": "editorLangId == helmfile"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "helmfile.diffAllReleases",
+          "group": "navigation",
+          "when": "editorLangId == helmfile"
+        }
+      ],
+      "helmfile.releaseActions": [
+        {
+          "command": "helmfile.templateRelease",
+          "group": "1_template"
+        },
+        {
+          "command": "helmfile.diffRelease",
+          "group": "2_diff"
+        },
+        {
+          "command": "helmfile.applyRelease",
+          "group": "3_apply"
+        },
+        {
+          "command": "helmfile.destroyRelease",
+          "group": "4_destroy"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "helmfile.releaseActions",
+        "label": "Helmfile Release Actions"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "helmfile.charts",
+          "name": "Chart Sources",
+          "icon": "media/helmfile.svg",
+          "when": "helmfile.hasCharts"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "helmfile.charts",
+        "contents": "Charts downloaded with Ctrl+Click on a chart name in a Helmfile appear here.\n[Refresh Chart Repositories](command:helmfile.refreshRepositories)"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "node esbuild.js --minify",
+    "esbuild": "node esbuild.js",
+    "compile": "tsc -p ./ && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package",
+    "typecheck": "tsc -p ./ --noEmit"
+  },
+  "dependencies": {
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.80.0",
+    "esbuild": "^0.19.9",
+    "typescript": "^5.3.3",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

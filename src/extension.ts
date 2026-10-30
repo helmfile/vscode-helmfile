@@ -1,0 +1,183 @@
+/**
+ * Extension entry point: wires every Helmfile feature into VSCode.
+ */
+import * as vscode from 'vscode';
+import { EnvironmentService } from './settings';
+import { closeOpenDocument, isHelmfileName, readSource, setOpenDocument, stateFor } from './values';
+import { HelmfileCompletionProvider } from './completion';
+import { HelmfileDefinitionProvider, HelmfileReferencesProvider } from './references';
+import { HelmfileHoverProvider } from './hover';
+import { HelmfileDiagnostics } from './inspection';
+import { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT, HELMFILE_GOTO_TEMPLATE_PARENT, HELMFILE_FIND_TEMPLATE_USAGES } from './codeLens';
+import { ChartSourceService } from './chartNavigation';
+import { repositoryService, type RepositoryQuery } from './repositoryService';
+import { repositoryModel, downloadable, query as repositoryQuery } from './repositories';
+import { runReleaseOperation, selectEnvironment } from './operations';
+import { channel } from './execution';
+import { scalarPathText, walkAll, type YPair } from './yamlTree';
+
+const HELMFILE_SELECTOR = { language: 'helmfile' };
+
+function isHelmfileDocument(document: vscode.TextDocument): boolean {
+    return document.languageId === 'helmfile' || isHelmfileName(document.uri.path.split('/').pop() ?? '');
+}
+
+export function activate(context: vscode.ExtensionContext): void {
+    const env = new EnvironmentService(context);
+    const completion = new HelmfileCompletionProvider(() => env.get());
+    const definition = new HelmfileDefinitionProvider(env);
+    const references = new HelmfileReferencesProvider(env);
+    const hover = new HelmfileHoverProvider(env);
+    const diagnostics = new HelmfileDiagnostics(env);
+    const lenses = new HelmfileCodeLensProvider(env);
+    const charts = new ChartSourceService();
+    charts.restore();
+
+    context.subscriptions.push(env, charts);
+
+    // Language providers.
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider(HELMFILE_SELECTOR, completion, '.', '/', ' '),
+        vscode.languages.registerDefinitionProvider(HELMFILE_SELECTOR, definition),
+        vscode.languages.registerReferenceProvider(HELMFILE_SELECTOR, references),
+        vscode.languages.registerHoverProvider(HELMFILE_SELECTOR, hover),
+        vscode.languages.registerCodeLensProvider(HELMFILE_SELECTOR, lenses),
+        diagnostics,
+        vscode.window.registerTreeDataProvider('helmfile.charts', charts),
+    );
+
+    // Document lifecycle: track open helmfile documents for values resolution + diagnostics.
+    const track = (document: vscode.TextDocument): void => {
+        if (!isHelmfileDocument(document)) return;
+        setOpenDocument(document.uri, document.version, document.getText(), document.version > 1);
+        diagnostics.track(document);
+    };
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument(track),
+        vscode.workspace.onDidChangeTextDocument(event => track(event.document)),
+        vscode.workspace.onDidCloseTextDocument(document => {
+            closeOpenDocument(document.uri);
+            diagnostics.forget(document.uri);
+        }),
+    );
+    vscode.workspace.textDocuments.forEach(track);
+
+    // Repository metadata changes refresh diagnostics.
+    context.subscriptions.push(repositoryService().onChanged(() => diagnostics.refreshAll()));
+
+    // Settings changes re-run diagnostics.
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration('helmfile')) diagnostics.refreshAll();
+        }),
+    );
+
+    // Environment switching refreshes lenses + diagnostics.
+    context.subscriptions.push(env.onDidChange(() => {
+        lenses.fire();
+        diagnostics.refreshAll();
+    }));
+
+    // Commands.
+    const register = (command: string, handler: (...args: never[]) => unknown): void => {
+        context.subscriptions.push(vscode.commands.registerCommand(command, handler));
+    };
+
+    register(HELMFILE_SELECT_ENVIRONMENT, (uri?: vscode.Uri) => selectEnvironment(env, uri));
+    register('helmfile.refreshRepositories', async () => {
+        const target = vscode.window.activeTextEditor?.document.uri ?? activeStateUri();
+        const state = target ? stateFor(target) : null;
+        if (!state) {
+            void vscode.window.showWarningMessage('Helmfile: open a helmfile state file first.');
+            return;
+        }
+        await repositoryService().refresh(collectQueries(state.uri, env.get()), true, 'Helmfile: Refresh Chart Repositories');
+    });
+    register('helmfile.templateRelease', (uri?: vscode.Uri, offset?: number) => runReleaseOperation(env, 'template', false, uri, offset));
+    register('helmfile.diffRelease', (uri?: vscode.Uri, offset?: number) => runReleaseOperation(env, 'diff', false, uri, offset));
+    register('helmfile.applyRelease', (uri?: vscode.Uri, offset?: number) => runReleaseOperation(env, 'apply', false, uri, offset));
+    register('helmfile.destroyRelease', (uri?: vscode.Uri, offset?: number) => runReleaseOperation(env, 'destroy', false, uri, offset));
+    register('helmfile.diffAllReleases', (uri?: vscode.Uri) => runReleaseOperation(env, 'diff', true, uri, undefined));
+    register('helmfile.openChartSource', async (uri?: vscode.Uri, offset?: number) => {
+        const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+        const at = offset ?? (vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.offsetAt(vscode.window.activeTextEditor.selection.active) : undefined);
+        if (!target || at === undefined) return;
+        const source = readSource(target);
+        if (!source) return;
+        await charts.open(source, at, env);
+    });
+    register(HELMFILE_GOTO_TEMPLATE_PARENT, async (uri?: vscode.Uri, offset?: number) => {
+        if (!uri || offset === undefined) return;
+        const locations = await vscode.commands.executeCommand<vscode.Location[]>('vscode.executeDefinitionProvider', uri, positionOf(uri, offset));
+        if (locations?.length) await vscode.window.showTextDocument(locations[0].uri, { selection: locations[0].range });
+    });
+    register(HELMFILE_FIND_TEMPLATE_USAGES, async (uri?: vscode.Uri, offset?: number) => {
+        if (!uri || offset === undefined) return;
+        const locations = await vscode.commands.executeCommand<vscode.Location[]>('vscode.executeReferenceProvider', uri, positionOf(uri, offset));
+        if (!locations?.length) return;
+        if (locations.length === 1) {
+            await vscode.window.showTextDocument(locations[0].uri, { selection: locations[0].range });
+            return;
+        }
+        const picked = await vscode.window.showQuickPick(
+            locations.map(location => ({ label: vscode.workspace.asRelativePath(location.uri), description: `line ${location.range.start.line + 1}`, location })),
+            { placeHolder: 'Template usages' },
+        );
+        if (picked) await vscode.window.showTextDocument(picked.location.uri, { selection: picked.location.range });
+    });
+
+    channel().appendLine('Helmfile support activated.');
+}
+
+function activeStateUri(): vscode.Uri | undefined {
+    return vscode.workspace.textDocuments.find(isHelmfileDocument)?.uri;
+}
+
+/** Repository queries for the refresh action: HTTP index downloads + OCI tag listings in use. */
+function collectQueries(uri: vscode.Uri, environment: string): RepositoryQuery[] {
+    const source = readSource(uri);
+    if (!source) return [];
+    const model = repositoryModel(uri, environment);
+    const queries: RepositoryQuery[] = [];
+    const seen = new Set<string>();
+    for (const entry of model.entries) {
+        if (entry.access.oci || !downloadable(entry.access)) continue;
+        const key = entry.access.url;
+        if (key && !seen.has(key)) {
+            seen.add(key);
+            queries.push({ access: entry.access, chart: '' });
+        }
+    }
+    // OCI repositories: collect charts referencing them for tag listings.
+    for (const doc of source.tree.docs) {
+        if (!doc.root) continue;
+        walkAll(doc.root, node => {
+            if (node.kind !== 'pair') return;
+            const pair = node as YPair;
+            if (pair.key !== 'chart' || !pair.value || pair.value.kind !== 'scalar') return;
+            const chartText = scalarPathText(pair.value);
+            if (!chartText || chartText.includes('{{')) return;
+            const query = repositoryQuery(uri, chartText, environment);
+            if (!query || !query.access.oci || !query.chart) return;
+            const key = `${query.access.url} ${query.chart}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            queries.push(query);
+        });
+    }
+    return queries;
+}
+
+function positionOf(uri: vscode.Uri, offset: number): vscode.Position {
+    const source = readSource(uri);
+    const text = source?.text ?? '';
+    let line = 0;
+    let lastNewline = -1;
+    for (let i = 0; i < offset && i < text.length; i++) {
+        if (text[i] === '\n') {
+            line++;
+            lastNewline = i;
+        }
+    }
+    return new vscode.Position(line, offset - lastNewline - 1);
+}

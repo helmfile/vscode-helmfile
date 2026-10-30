@@ -1,0 +1,144 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Helmfile",
+  "scopeName": "source.helmfile",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#action" },
+    { "include": "#backtick" },
+    { "include": "#string-double" },
+    { "include": "#string-single" },
+    { "include": "#list-marker" },
+    { "include": "#key" },
+    { "include": "#constant" },
+    { "include": "#number" },
+    { "include": "#block-scalar" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*",
+      "name": "comment.line.number-sign.helmfile"
+    },
+    "action": {
+      "name": "meta.action.helmfile",
+      "begin": "\\{\\{-?",
+      "end": "-?\\}\\}",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.action.begin.helmfile" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.action.end.helmfile" }
+      },
+      "patterns": [
+        { "include": "#action-comment" },
+        { "include": "#string-double" },
+        { "include": "#string-single" },
+        { "include": "#backtick" },
+        { "include": "#action-keyword" },
+        { "include": "#action-constant" },
+        { "include": "#action-number" },
+        { "include": "#action-path" },
+        { "include": "#action-variable" },
+        { "include": "#action-helmfile-function" },
+        { "include": "#action-sprig-function" },
+        { "include": "#action-go-function" },
+        { "include": "#action-identifier" }
+      ]
+    },
+    "action-comment": {
+      "begin": "/\\*",
+      "end": "\\*/",
+      "name": "comment.block.helmfile"
+    },
+    "action-keyword": {
+      "match": "\\b(?:if|else|end|range|with|define|template|block|break|continue)\\b",
+      "name": "keyword.control.go-template.helmfile"
+    },
+    "action-constant": {
+      "match": "\\b(?:true|false|nil)\\b",
+      "name": "constant.language.go-template.helmfile"
+    },
+    "action-number": {
+      "match": "-?\\b\\d+(?:\\.\\d+)?\\b",
+      "name": "constant.numeric.go-template.helmfile"
+    },
+    "action-path": {
+      "match": "\\B(?:\\.\\$?|\\$\\.)(?:[A-Za-z_][A-Za-z0-9_]*\\.?)+",
+      "name": "variable.other.field.go-template.helmfile"
+    },
+    "action-variable": {
+      "match": "\\$[A-Za-z_][A-Za-z0-9_]*",
+      "name": "variable.other.readwrite.go-template.helmfile"
+    },
+    "action-helmfile-function": {
+      "match": "\\b(?:env|requiredEnv|readFile|readDir|readDirEntries|isFile|isDir|exec|envExec|toYaml|fromYaml|setValueAtPath|get|getOrNil|tpl|required|include|fetchSecretValue|expandSecretRefs)\\b",
+      "name": "support.function.helmfile.helmfile"
+    },
+    "action-sprig-function": {
+      "match": "\\b(?:add|append|b64dec|b64enc|base|concat|contains|deepCopy|default|dig|dir|div|empty|fail|first|fromJson|hasKey|hasPrefix|hasSuffix|indent|int|join|keys|last|list|lower|merge|mergeOverwrite|mul|nindent|quote|regexMatch|replace|rest|semverCompare|sha256sum|sortAlpha|splitList|squote|sub|ternary|title|toString|trim|trimPrefix|trimSuffix|trunc|uniq|upper)\\b",
+      "name": "support.function.sprig.go-template.helmfile"
+    },
+    "action-go-function": {
+      "match": "\\b(?:and|eq|ge|gt|index|le|len|lt|ne|not|or|print|printf|println|slice)\\b",
+      "name": "support.function.builtin.go-template.helmfile"
+    },
+    "action-identifier": {
+      "match": "[A-Za-z_][A-Za-z0-9_]*",
+      "name": "meta.identifier.go-template.helmfile"
+    },
+    "backtick": {
+      "begin": "`",
+      "end": "`",
+      "name": "string.interpolated.helmfile",
+      "patterns": [
+        { "include": "#action" }
+      ]
+    },
+    "string-double": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.helmfile",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.helmfile" },
+        { "include": "#action" }
+      ]
+    },
+    "string-single": {
+      "begin": "'",
+      "end": "'",
+      "name": "string.quoted.single.helmfile",
+      "patterns": [
+        { "match": "''", "name": "constant.character.escape.helmfile" },
+        { "include": "#action" }
+      ]
+    },
+    "list-marker": {
+      "match": "^\\s*(-)\\s",
+      "captures": {
+        "1": { "name": "punctuation.definition.block.sequence.item.yaml" }
+      }
+    },
+    "key": {
+      "match": "^\\s*(?:-\\s+)?([A-Za-z_][\\w .-]*?)(:)(?=\\s|$)",
+      "captures": {
+        "1": { "name": "entity.name.tag.yaml" },
+        "2": { "name": "punctuation.separator.key-value.mapping.yaml" }
+      }
+    },
+    "constant": {
+      "match": "\\b(?:true|false|yes|no|on|off|null|~)\\b",
+      "name": "constant.language.yaml"
+    },
+    "number": {
+      "match": "\\b(?:0x[0-9a-fA-F]+|\\d+(?:\\.\\d+)?)\\b",
+      "name": "constant.numeric.yaml"
+    },
+    "block-scalar": {
+      "match": "(:)(?:[|>])([+-]?\\d*)(?=\\s|$)",
+      "captures": {
+        "1": { "name": "punctuation.separator.key-value.mapping.yaml" },
+        "2": { "name": "keyword.operator.block.scalar.yaml" }
+      }
+    }
+  }
+}
