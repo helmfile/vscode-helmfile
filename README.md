@@ -98,6 +98,18 @@ with feature parity.
 
 HTTP(S) access honors VSCode's `http.proxy` setting.
 
+### Note for Go users
+
+The [Go extension](https://marketplace.visualstudio.com/items?itemName=golang.go)
+claims all `.gotmpl` files as pure Go templates. Canonical state files
+(`helmfile.yaml.gotmpl`, `helmfile.yml.gotmpl`) are claimed by this extension
+through exact filenames and are unaffected. If you use other `.gotmpl` file
+names as Helmfile templates, associate them manually:
+
+```json
+"files.associations": { "**/my-helmfile.yaml.gotmpl": "helmfile" }
+```
+
 ## Development
 
 ```bash
