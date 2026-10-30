@@ -24,18 +24,6 @@
     "gotemplate",
     "yaml"
   ],
-  "activationEvents": [
-    "onLanguage:helmfile",
-    "onCommand:helmfile.selectEnvironment",
-    "onCommand:helmfile.refreshRepositories",
-    "onCommand:helmfile.diffAllReleases",
-    "onCommand:helmfile.templateRelease",
-    "onCommand:helmfile.diffRelease",
-    "onCommand:helmfile.applyRelease",
-    "onCommand:helmfile.destroyRelease",
-    "onView:helmfile.charts",
-    "onCommand:helmfile.openChartSource"
-  ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
