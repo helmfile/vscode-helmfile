@@ -59,7 +59,8 @@ export class HelmfileDiagnostics implements vscode.Disposable {
 }
 
 export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]): void {
-    for (const action of TemplateScanner.scan(text)) {
+    const actions = TemplateScanner.scan(text);
+    for (const action of actions) {
         if (!action.closed) {
             diagnostics.push(
                 new vscode.Diagnostic(range(text, action.start, text.length), 'Unclosed Go template action: expected }}', vscode.DiagnosticSeverity.Warning),
@@ -74,6 +75,19 @@ export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]):
                 new vscode.Diagnostic(range(text, action.start, action.end), 'Empty Go template action: nothing between {{ and }}', vscode.DiagnosticSeverity.Warning),
             );
         }
+    }
+    // Orphan closers: a "}}" outside any action span almost always means the
+    // opening "{{" was deleted, so Go templates treat the leftover text as a
+    // literal value (e.g. `routerInstances:  .Values | get "x" 2 }}`).
+    let covered = 0;
+    for (let i = 0; i + 1 < text.length; i++) {
+        if (text[i] !== '}' || text[i + 1] !== '}') continue;
+        while (covered < actions.length && actions[covered].end <= i) covered++;
+        if (covered < actions.length && i >= actions[covered].start) continue;
+        diagnostics.push(
+            new vscode.Diagnostic(range(text, i, i + 2), 'Unmatched Go template closing: no matching {{', vscode.DiagnosticSeverity.Warning),
+        );
+        i++;
     }
 }
 

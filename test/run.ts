@@ -272,6 +272,11 @@ entries:
     eq(actions('{{ }}').length, 1, 'blank action {{ }} flagged');
     eq(actions('{{- -}}').length, 1, 'trim-marker blank action flagged');
     check('empty action message', actions('{{ .x }}').length === 0 && actions('{{}}')[0].message.includes('Empty'), 'non-empty actions pass');
+    eq(actions('routerInstances:  .Values | get "mysql.routerInstances" 2 }}').length, 1, 'orphan }} without {{ flagged');
+    check('orphan message', actions('x: }}')[0].message.includes('Unmatched Go template closing'), 'orphan message text');
+    eq(actions('a: {{ .x }}').length, 0, 'closed actions add no orphan warnings');
+    eq(actions('{{ if .x }} tail }}').length, 1, '}} outside action span flagged once');
+    eq(actions('}}}').length, 1, 'triple brace flagged once');
     const blocks = (text: string): { message: string }[] => {
         const out: { message: string }[] = [];
         templateBlocks(text, out as vscode.Diagnostic[]);
