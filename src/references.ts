@@ -120,6 +120,14 @@ export class HelmfileReferencesProvider implements vscode.ReferenceProvider {
     }
 }
 
+/** `.Values` / `.StateValues` / `.Environment.Values` roots carry no own definition key. */
+function stripValueRoot(segments: string[]): string[] {
+    const rest = [...segments];
+    if (rest[0] === 'Environment' && rest[1] === 'Values') rest.splice(0, 2);
+    else if (rest[0] === 'Values' || rest[0] === 'StateValues') rest.splice(0, 1);
+    return rest;
+}
+
 /**
  * Find the values path token containing `offset` inside a Go template action,
  * including `index .Values "quoted"` keys.
@@ -134,7 +142,7 @@ export function valuePathAt(text: string, offset: number): ValuePathReference | 
         const base = match[1];
         const quoted = match[2];
         if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
-        const segments = [base.slice(1).split('.')[0], ...splitQuoted(quoted)];
+        const segments = [...stripValueRoot(base.replace(/^\$?/, '').split('.').filter(segment => segment.length > 0)), ...splitQuoted(quoted)];
         const key = valuesKeyPath(segments);
         return { key, range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + match[0].length) };
     }
@@ -142,10 +150,12 @@ export function valuePathAt(text: string, offset: number): ValuePathReference | 
     for (const match of matchAll(ROOT_PATH, body)) {
         if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
         const token = match[0];
-        const segments = token
-            .replace(/^\$?/, '')
-            .split('.')
-            .filter(segment => segment.length > 0);
+        const segments = stripValueRoot(
+            token
+                .replace(/^\$?/, '')
+                .split('.')
+                .filter(segment => segment.length > 0),
+        );
         return { key: valuesKeyPath(segments), range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + token.length) };
     }
     return null;
@@ -169,14 +179,25 @@ export function pathFileReferenceAt(uri: vscode.Uri, text: string, offset: numbe
 
 /** The `chart: alias/name` scalar range and the alias prefix length. */
 export function chartFieldReferenceAt(source: SourceFile, offset: number): ChartFieldReference | null {
-    const pair = pairKeyAt(source.tree, offset);
-    if (!pair || !isChartField(pair, 'chart') || !pair.value || pair.value.kind !== 'scalar') return null;
-    const chartText = scalarPathText(pair.value);
-    if (!chartText || chartText.includes('{{')) return null;
-    const aliasLength = alias(source.uri, chartText)?.length ?? -1;
-    const quote = quoted(source.text, pair.value.start);
-    const start = pair.value.start + (quote ? 1 : 0);
-    return { chart: chartText, aliasLength, range: offsetRange(source.text, start, start + chartText.length) };
+    let current: ReturnType<typeof nodeAt> = nodeAt(source.tree, offset);
+    while (current) {
+        if (current.kind === 'pair') {
+            const pair = current as YPair;
+            const inValue = pair.value && offset >= pair.keyEnd && offset <= pair.value.end;
+            if (inValue && isChartField(pair, 'chart') && pair.value && pair.value.kind === 'scalar') {
+                const chartText = scalarPathText(pair.value);
+                if (chartText && !chartText.includes('{{')) {
+                    const aliasLength = alias(source.uri, chartText)?.length ?? -1;
+                    const quote = quoted(source.text, pair.value.start);
+                    const start = pair.value.start + (quote ? 1 : 0);
+                    return { chart: chartText, aliasLength, range: offsetRange(source.text, start, start + chartText.length) };
+                }
+            }
+            break;
+        }
+        current = current.parent as typeof current;
+    }
+    return null;
 }
 
 /** `inherit: [{template: parent}]` reference at offset. */

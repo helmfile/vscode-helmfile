@@ -228,9 +228,9 @@ entries:
 {
     const text = 'namespace: {{ .StateValues.namespace }}';
     const ref = valuePathAt(text, text.indexOf('namespace }}') - 3);
-    check('valuePathAt .StateValues', ref != null && ref.key === ['StateValues', 'namespace'].join(SEPARATOR), JSON.stringify(ref));
+    check('valuePathAt .StateValues', ref != null && ref.key === ['namespace'].join(SEPARATOR), JSON.stringify(ref));
     const indexRef = valuePathAt('{{ index .Values "image-tag" }}', 12);
-    check('valuePathAt index quoted key', indexRef != null && indexRef.key === ['Values', 'image-tag'].join(SEPARATOR), JSON.stringify(indexRef));
+    check('valuePathAt index quoted key', indexRef != null && indexRef.key === ['image-tag'].join(SEPARATOR), JSON.stringify(indexRef));
     eq(valuePathAt('key: value', 5), null, 'valuePathAt outside action');
 
     eq(findFunction('toYaml')?.family, 'Helmfile', 'catalog toYaml');
