@@ -120,10 +120,25 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!source) return;
         await charts.open(source, at, env);
     });
-    register(HELMFILE_GOTO_TEMPLATE_PARENT, async (uri?: vscode.Uri, offset?: number) => {
-        if (!uri || offset === undefined) return;
-        const locations = await vscode.commands.executeCommand<vscode.Location[]>('vscode.executeDefinitionProvider', uri, positionOf(uri, offset));
-        if (locations?.length) await vscode.window.showTextDocument(locations[0].uri, { selection: locations[0].range });
+    register(HELMFILE_GOTO_TEMPLATE_PARENT, async (uri?: vscode.Uri, offsets?: number[] | number) => {
+        if (!uri) return;
+        const starts = Array.isArray(offsets) ? offsets : offsets !== undefined ? [offsets] : [];
+        const seen = new Map<string, vscode.Location>();
+        for (const offset of starts) {
+            const locations = await vscode.commands.executeCommand<vscode.Location[]>('vscode.executeDefinitionProvider', uri, positionOf(uri, offset));
+            for (const location of locations ?? []) seen.set(`${location.uri.toString()}#${location.range.start.line}:${location.range.start.character}`, location);
+        }
+        const targets = [...seen.values()];
+        if (targets.length === 1) {
+            await vscode.window.showTextDocument(targets[0].uri, { selection: targets[0].range });
+            return;
+        }
+        if (targets.length === 0) return;
+        const picked = await vscode.window.showQuickPick(
+            targets.map(location => ({ label: vscode.workspace.asRelativePath(location.uri), description: `line ${location.range.start.line + 1}`, location })),
+            { placeHolder: 'Parent templates' },
+        );
+        if (picked) await vscode.window.showTextDocument(picked.location.uri, { selection: picked.location.range });
     });
     register(HELMFILE_FIND_TEMPLATE_USAGES, async (uri?: vscode.Uri, offset?: number) => {
         if (!uri || offset === undefined) return;
