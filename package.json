@@ -35,7 +35,9 @@
         ],
         "filenames": [
           "helmfile.yaml",
-          "helmfile.yml"
+          "helmfile.yml",
+          "helmfile.yaml.gotmpl",
+          "helmfile.yml.gotmpl"
         ],
         "extensions": [
           ".gotmpl"
