@@ -77,6 +77,23 @@ async function main(): Promise<void> {
         check('hover on values path', (hovers?.length ?? 0) > 0, `hovers=${hovers?.length ?? 0}`);
     }
 
+    // 6. Syntax diagnostics on a scratch copy with an unclosed {{ action and
+    //    a broken YAML indent: tracked documents must report both.
+    const fs = await import('node:fs');
+    const scratch = path.join(examplesDir, 'helmfile-diag-check.yaml.gotmpl');
+    fs.writeFileSync(scratch, text + '\n  - name: zz\n    chart: {{ if .Values.x }} {{ .Values.y\n');
+    try {
+        const scratchUri = vscode.Uri.file(scratch);
+        const sdoc = await vscode.workspace.openTextDocument(scratchUri);
+        await vscode.window.showTextDocument(sdoc);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const scratchDiags = vscode.languages.getDiagnostics(scratchUri);
+        check('unclosed {{ warned', scratchDiags.some(d => d.message.includes('Unclosed Go template action')), JSON.stringify(scratchDiags.map(d => d.message.slice(0, 40))));
+        check('unclosed block warned', scratchDiags.some(d => d.message.includes('Unclosed Go template block')), JSON.stringify(scratchDiags.map(d => d.message.slice(0, 40))));
+    } finally {
+        fs.unlinkSync(scratch);
+    }
+
     if (failures.length) {
         console.error(`[it] ${failures.length} failure(s): ${failures.join(', ')}`);
         process.exitCode = 1;

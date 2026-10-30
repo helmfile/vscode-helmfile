@@ -58,12 +58,22 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     }
 }
 
-function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]): void {
+export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]): void {
     for (const action of TemplateScanner.scan(text)) {
-        if (action.closed) continue;
-        diagnostics.push(
-            new vscode.Diagnostic(range(text, action.start, text.length), 'Unclosed Go template action: expected }}', vscode.DiagnosticSeverity.Warning),
-        );
+        if (!action.closed) {
+            diagnostics.push(
+                new vscode.Diagnostic(range(text, action.start, text.length), 'Unclosed Go template action: expected }}', vscode.DiagnosticSeverity.Warning),
+            );
+            continue;
+        }
+        // An auto-closed "{{}}" is a valid shape for the scanner but an empty
+        // command for Go templates — helmfile fails to render it.
+        const body = text.slice(action.bodyStart, action.bodyEnd).trim();
+        if (body.length === 0) {
+            diagnostics.push(
+                new vscode.Diagnostic(range(text, action.start, action.end), 'Empty Go template action: nothing between {{ and }}', vscode.DiagnosticSeverity.Warning),
+            );
+        }
     }
 }
 

@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
-import { templateBlocks } from '../src/inspection';
+import { templateBlocks, unclosedActions } from '../src/inspection';
 import { allFunctions, findFunction } from '../src/functionCatalog';
 import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
 import { repositoryModel, query, alias } from '../src/repositories';
@@ -263,6 +263,15 @@ entries:
 
 // ---------------------------------------------------------------- template blocks
 {
+    const actions = (text: string): { message: string }[] => {
+        const out: { message: string }[] = [];
+        unclosedActions(text, out as vscode.Diagnostic[]);
+        return out;
+    };
+    eq(actions('{{}}').length, 1, 'empty action {{}} flagged');
+    eq(actions('{{ }}').length, 1, 'blank action {{ }} flagged');
+    eq(actions('{{- -}}').length, 1, 'trim-marker blank action flagged');
+    check('empty action message', actions('{{ .x }}').length === 0 && actions('{{}}')[0].message.includes('Empty'), 'non-empty actions pass');
     const blocks = (text: string): { message: string }[] => {
         const out: { message: string }[] = [];
         templateBlocks(text, out as vscode.Diagnostic[]);
