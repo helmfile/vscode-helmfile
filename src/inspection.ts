@@ -4,7 +4,7 @@
  * unclosed Go template action warning.
  */
 import * as vscode from 'vscode';
-import { TemplateScanner } from './templateScanner';
+import { TemplateScanner, type TemplateAction } from './templateScanner';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
 import { isHelmfileName, type SourceFile } from './values';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
@@ -43,6 +43,7 @@ export class HelmfileDiagnostics implements vscode.Disposable {
         const diagnostics: vscode.Diagnostic[] = [];
         yamlSyntaxErrors(document, diagnostics);
         unclosedActions(text, diagnostics);
+        templateBlocks(text, diagnostics);
         repositoryDiagnostics({ uri: document.uri, text, tree: parseTree(text) }, this.env.get(), diagnostics);
         this.collection.set(document.uri, diagnostics);
     }
@@ -62,6 +63,50 @@ function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]): void {
         if (action.closed) continue;
         diagnostics.push(
             new vscode.Diagnostic(range(text, action.start, text.length), 'Unclosed Go template action: expected }}', vscode.DiagnosticSeverity.Warning),
+        );
+    }
+}
+
+const BLOCK_KEYWORDS = new Set(['if', 'range', 'with', 'define', 'block']);
+
+/**
+ * Go template block matching, the diagnostics twin of the IntelliJ
+ * annotator's unmatched-block highlighting: every {{ if / range / with /
+ * define / block }} must be closed by {{ end }}, {{ else }} may only appear
+ * inside if/range/with, and stray {{ end }} is flagged.
+ */
+export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): void {
+    const stack: { keyword: string; action: TemplateAction }[] = [];
+    for (const action of TemplateScanner.scan(text)) {
+        const body = text.slice(action.bodyStart, action.bodyEnd).trim();
+        if (body.startsWith('/*')) continue; // comment action
+        const head = body.split(/\s+/)[0] ?? '';
+        if (BLOCK_KEYWORDS.has(head)) {
+            stack.push({ keyword: head, action });
+        } else if (head === 'end') {
+            if (stack.length === 0) {
+                diagnostics.push(
+                    new vscode.Diagnostic(range(text, action.start, action.end), '{{ end }} without a matching {{ if }}, {{ range }}, {{ with }}, {{ define }} or {{ block }}', vscode.DiagnosticSeverity.Warning),
+                );
+            } else {
+                stack.pop();
+            }
+        } else if (head === 'else') {
+            const open = stack[stack.length - 1];
+            if (!open || (open.keyword !== 'if' && open.keyword !== 'range' && open.keyword !== 'with')) {
+                diagnostics.push(
+                    new vscode.Diagnostic(range(text, action.start, action.end), '{{ else }} outside of an {{ if }}, {{ range }} or {{ with }} block', vscode.DiagnosticSeverity.Warning),
+                );
+            }
+            // `else if ...` reuses the enclosing block's {{ end }} — depth stays.
+        }
+    }
+    for (const open of stack) {
+        // A block whose opening action itself never closed is already reported
+        // by the unclosed-action warning; don't double-report it.
+        if (!open.action.closed) continue;
+        diagnostics.push(
+            new vscode.Diagnostic(range(text, open.action.start, open.action.end), `Unclosed Go template block {{ ${open.keyword} }}: expected {{ end }}`, vscode.DiagnosticSeverity.Warning),
         );
     }
 }

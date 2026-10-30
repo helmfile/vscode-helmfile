@@ -9,6 +9,9 @@ class Position {
 class Range {
     constructor(readonly start: Position, readonly end: Position) {}
 }
+class Diagnostic {
+    constructor(readonly range: unknown, readonly message: string, readonly severity?: number) {}
+}
 class Location {
     constructor(readonly uri: Uri, readonly range: any) {}
 }
@@ -53,6 +56,7 @@ export = {
     Uri,
     Position,
     Range,
+    Diagnostic,
     Location,
     MarkdownString,
     EventEmitter,
