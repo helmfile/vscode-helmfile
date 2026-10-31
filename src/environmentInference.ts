@@ -44,7 +44,7 @@ export interface InferredEnvironment {
     readonly origin: string;
 }
 
-type Value =
+export type Value =
     | { kind: 'text'; text: string; origin: string }
     | { kind: 'mapping'; mapping: YMapping; origin: string }
     | { kind: 'values'; definitions: ValuesDefinition[]; prefix: string; origin: string }
@@ -233,10 +233,9 @@ function evaluate(raw: string, variables: Map<string, Value>, source: SourceFile
             const call = /^get\s+"((?:[^"\\]|\\.)*)"(?:\s+(true|false|nil|"[^"]*"|\d+(?:\.\d+)?))?$/.exec(fn);
             if (!call) return null;
             const next: Value = value && lookup(value, call[1]);
-            value =
-                next !== null && next !== undefined
-                    ? next
-                    : { kind: 'text', text: unquote(call[2] ?? 'nil'), origin: value?.kind === 'text' || value?.kind === 'mapping' || value?.kind === 'values' ? value.origin : 'default' };
+            // The trailing literal is the template's own default — label it
+            // as such, whatever the head resolved from.
+            value = next !== null && next !== undefined ? next : { kind: 'text', text: unquote(call[2] ?? 'nil'), origin: 'default' };
         } else if (fn.startsWith('index ')) {
             value = evaluate(fn, variables, source, environment);
         } else {
@@ -370,6 +369,62 @@ function stripParens(expr: string): string {
         text = text.slice(1, -1).trim();
     }
     return text;
+}
+
+/**
+ * Result of statically evaluating the template expression around `offset`.
+ */
+export interface EvaluatedExpression {
+    /** The expression text that was evaluated (control keywords stripped). */
+    readonly expression: string;
+    readonly value: NonNullable<Value>;
+    /** The whole action span, used as the hover range. */
+    readonly start: number;
+    readonly end: number;
+}
+
+/**
+ * Statically evaluate the Go template expression the offset sits in:
+ * assignments before the action accumulate template variables, control
+ * keywords (`if`, `else if`, `range`, `with`) expose their condition or
+ * collection, and anything outside the evaluator's whitelist yields null.
+ */
+export function evaluateExpressionAt(source: SourceFile, offset: number, environment?: string): EvaluatedExpression | null {
+    const action = TemplateScanner.at(source.text, offset);
+    if (!action) return null;
+
+    const variables = new Map<string, NonNullable<Value>>();
+    for (const other of TemplateScanner.scan(source.text)) {
+        if (other.bodyStart >= action.bodyStart) break;
+        const assign = assignmentOf(source.text.slice(other.bodyStart, other.bodyEnd));
+        if (!assign) continue;
+        const value = evaluate(assign[1], variables, source, environment);
+        if (value) variables.set(assign[0], value);
+    }
+
+    const expression = expressionOf(source.text.slice(action.bodyStart, action.bodyEnd));
+    if (!expression) return null;
+    const value = evaluate(expression, variables, source, environment);
+    if (!value) return null;
+    return { expression, value, start: action.start, end: action.end };
+}
+
+/** `$name := rhs` assignment body, or null. */
+function assignmentOf(body: string): [name: string, rhs: string] | null {
+    const match = /^\$(\w+)\s*:=\s*([\s\S]+)$/.exec(body.trim());
+    return match ? [match[1], match[2].trim()] : null;
+}
+
+/** The evaluable expression inside an action body, with keywords stripped. */
+function expressionOf(body: string): string | null {
+    const trimmed = body.trim().replace(/^-\s*/, '').replace(/\s*-$/, '').trim();
+    if (!trimmed) return null;
+    if (/^(else|end|break|continue|template\b)/.test(trimmed)) return null;
+    const control = /^(?:if|range|with|define|block)\s+([\s\S]+)$/.exec(trimmed);
+    const rest = control ? control[1] : trimmed;
+    const decl = /^\$\w+\s*(?:,\s*\$\w+\s*)?:=\s*([\s\S]+)$/.exec(rest);
+    const expression = (decl ? decl[1] : rest).trim();
+    return expression || null;
 }
 
 /**

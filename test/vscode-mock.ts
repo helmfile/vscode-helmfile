@@ -15,6 +15,10 @@ class Diagnostic {
 class Location {
     constructor(readonly uri: Uri, readonly range: any) {}
 }
+class Hover {
+    constructor(readonly contents: unknown, readonly range?: unknown) {}
+}
+
 class MarkdownString {
     value = '';
     isTrusted = false;
@@ -142,6 +146,7 @@ export = {
     Range,
     Diagnostic,
     Location,
+    Hover,
     MarkdownString,
     SnippetString,
     CompletionItem,

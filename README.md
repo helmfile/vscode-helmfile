@@ -53,7 +53,12 @@ with feature parity.
 
 - Go template / Sprig / Helmfile function documentation with signature,
   example and reference link.
-- Values paths show the resolved value, its source file and environment.
+- Values paths show the resolved value, its source file and environment —
+  including quoted keys via `index .Values "a.b"` and `get` in both forms
+  (`.Values | get "a.b" false` / `get .Values "a.b" false`).
+- Inside any template action, other expressions (`if`/`range` conditions,
+  `readFile … | fromYaml` chains, `get` defaults for keys no values file
+  defines) show their statically computed value with its provenance.
 
 ### VSCode integration
 

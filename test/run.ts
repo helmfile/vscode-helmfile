@@ -683,5 +683,97 @@ entries:
     }
 }
 
+// ------------------------------------------------- get-form value paths + expression hover
+{
+    const { evaluateExpressionAt } = require('../src/environmentInference') as typeof import('../src/environmentInference');
+
+    const pipeForm = '{{- if .Values | get "install.mysql_innodbcluster_d7y" false }}';
+    const pipeOffset = pipeForm.indexOf('.Values') + 2;
+    const pipeRef = valuePathAt(pipeForm, pipeOffset);
+    check(
+        'valuePathAt get pipe form',
+        pipeRef != null && pipeRef.key === ['install', 'mysql_innodbcluster_d7y'].join(SEPARATOR),
+        JSON.stringify(pipeRef),
+    );
+    const callRef = valuePathAt('{{ get .Values "a.b" true }}', 8);
+    check('valuePathAt get call form', callRef != null && callRef.key === ['a', 'b'].join(SEPARATOR), JSON.stringify(callRef));
+    const quotedOffset = pipeForm.indexOf('mysql_innodbcluster_d7y');
+    check('valuePathAt get quoted key cursor', valuePathAt(pipeForm, quotedOffset)?.key === ['install', 'mysql_innodbcluster_d7y'].join(SEPARATOR), 'quoted key cursor');
+
+    const conditional = [
+        'environments:',
+        '  default:',
+        '    values:',
+        '      - "defaults.yaml"',
+        '{{- if .Values | get "install.mysql_innodbcluster_d7y" false }}',
+        '  mysql-innodbcluster:',
+        '    values: []',
+        '{{- end }}',
+        '',
+        'releases: []',
+    ].join('\n');
+    const write = (dir: string, body: string) => {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'helmfile.yaml.gotmpl'), conditional);
+        fs.writeFileSync(path.join(dir, 'defaults.yaml'), body);
+    };
+    const ifOffset = conditional.indexOf('.Values | get');
+
+    {
+        const temp = fs.mkdtempSync('helmfile-eval-');
+        try {
+            write(temp, 'install:\n  mysql_innodbcluster_d7y: true\n');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const evaluated = evaluateExpressionAt({ uri, text: conditional, tree: parseTree(conditional) }, ifOffset, 'default');
+            check('evaluate get condition true', evaluated?.value.kind === 'text' && evaluated.value.text === 'true', JSON.stringify(evaluated));
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+    {
+        const temp = fs.mkdtempSync('helmfile-eval-');
+        try {
+            write(temp, 'other: 1\n');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const evaluated = evaluateExpressionAt({ uri, text: conditional, tree: parseTree(conditional) }, ifOffset + 20, 'default');
+            check(
+                'evaluate get condition default false',
+                evaluated?.value.kind === 'text' && evaluated.value.text === 'false' && evaluated.value.origin === 'default',
+                JSON.stringify(evaluated),
+            );
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+
+    // readFile/fromYaml chain with variable accumulation (d7y workaround head).
+    {
+        const temp = fs.mkdtempSync('helmfile-eval-');
+        try {
+            fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+            fs.writeFileSync(path.join(temp, 'bases/environments.yaml'), 'environments:\n  dev: {}\n  prod: {}\n');
+            const text = [
+                'environments:',
+                '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+                '{{ range $key, $env := (index $environments "environments") }}',
+                '  {{ $key }}:',
+                '{{- end }}',
+            ].join('\n');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const rangeOffset = text.indexOf('index $environments');
+            const evaluated = evaluateExpressionAt({ uri, text, tree: parseTree(text) }, rangeOffset, 'default');
+            check(
+                'evaluate range head via readFile chain',
+                evaluated?.value.kind === 'mapping' && evaluated.value.mapping.pairs.length === 2,
+                JSON.stringify(evaluated && (evaluated.value.kind === 'mapping' ? evaluated.value.mapping.pairs.map(p => p.key) : evaluated.value)),
+            );
+            // Hovering the {{- end }} action yields nothing.
+            eq(evaluateExpressionAt({ uri, text, tree: parseTree(text) }, text.indexOf('{{- end }}') + 4, 'default'), null, 'evaluate end action null');
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);
