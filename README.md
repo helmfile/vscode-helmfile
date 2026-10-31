@@ -1,8 +1,40 @@
 # Helmfile for Visual Studio Code
 
+English | [简体中文](README.zh-CN.md)
+
 Helmfile state file support for VSCode, ported from the
 [helmfile-intellij-plugin](https://github.com/fennesstiv/helmfile-intellij-plugin)
 with feature parity.
+
+## Installation
+
+### From a prebuilt VSIX
+
+Download the latest `vscode-helmfile-<version>.vsix` from
+[Releases](https://github.com/helmfile/vscode-helmfile/releases), then:
+
+```bash
+code --install-extension vscode-helmfile-0.2.0.vsix --force
+```
+
+`--force` upgrades an already-installed older version. Reload the window
+afterwards (**Developer: Reload Window**). On Remote-SSH / devcontainer
+setups, use **Extensions: Install from VSIX…** on the remote side instead.
+
+### Build from source
+
+```bash
+git clone https://github.com/helmfile/vscode-helmfile.git
+cd vscode-helmfile
+npm install
+npm run package   # produces vscode-helmfile-<version>.vsix
+code --install-extension vscode-helmfile-<version>.vsix --force
+```
+
+### Try without installing
+
+Open the repository in VSCode and press **F5** — an Extension Development
+Host launches with the sample state in `examples/`.
 
 ## Features
 
