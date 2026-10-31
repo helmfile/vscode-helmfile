@@ -12,6 +12,7 @@ import { completionPath, schemaContext, schemaFields, type Field } from './schem
 import { childKeys, SEPARATOR, valuesModel, type SourceFile, type ValuesDefinition } from './values';
 import { repositoryDownloadsEnabled } from './settings';
 import { chart, query, repositoryModel, type RepositoryQuery } from './repositories';
+import type { ChartEntry, ChartIndex } from './chartIndex';
 import { repositoryService } from './repositoryService';
 import { contextualCompletions, localChartCompletions } from './contextualCompletion';
 
@@ -32,6 +33,16 @@ const CONTEXT_PATHS = [
     '$.Values',
     '$.Environment.Name',
 ];
+
+/**
+ * Versions of the completion target chart only. OCI queries carry the
+ * chart name in `request.chart`; HTTP indexes are keyed by the chart
+ * segment after the repository alias (mirrors HelmfileRepositoryCompletion).
+ */
+export function chartVersions(chartText: string, request: RepositoryQuery, index: ChartIndex): readonly ChartEntry[] {
+    const name = request.access.oci ? request.chart : chartText.slice(chartText.indexOf('/') + 1);
+    return index.charts.get(name) ?? [];
+}
 
 export class HelmfileCompletionProvider implements vscode.CompletionItemProvider {
     constructor(private readonly env: () => string) {}
@@ -151,7 +162,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                 for (const [name, versions] of snapshot.index.charts) {
                     const latest = versions[0];
                     const item = new vscode.CompletionItem(aliasPart + '/' + name, vscode.CompletionItemKind.Module);
-                    item.detail = 'version';
+                    item.detail = latest ? latest.version : 'chart';
                     item.documentation = new vscode.MarkdownString(latest?.description || name);
                     item.insertText = aliasPart + '/' + name;
                     if (versions.every(version => version.deprecated)) {
@@ -178,13 +189,12 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         const snapshot = repositoryService().snapshot(request, repositoryDownloadsEnabled());
         if (snapshot.index) {
             let order = 0;
-            for (const versions of snapshot.index.charts.values()) {
-                for (const entry of versions) {
-                    const item = new vscode.CompletionItem(entry.version, vscode.CompletionItemKind.Constant);
-                    item.sortText = String(order++).padStart(6, '0');
-                    item.insertText = entry.version;
-                    items.push(item);
-                }
+            for (const entry of chartVersions(chartText, request, snapshot.index)) {
+                const item = new vscode.CompletionItem(entry.version, vscode.CompletionItemKind.Constant);
+                item.sortText = String(order++).padStart(6, '0');
+                item.insertText = entry.version;
+                if (entry.deprecated) item.tags = [vscode.CompletionItemTag.Deprecated];
+                items.push(item);
             }
         } else {
             items.push(...advertise(snapshot));

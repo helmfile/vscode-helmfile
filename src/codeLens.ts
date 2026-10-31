@@ -103,8 +103,9 @@ export class HelmfileCodeLensProvider implements vscode.CodeLensProvider {
             // Template inheritance arrows: one lens per line (a line can hold
             // several `inherit` entries when written inline); multiple targets
             // open a picker, like the IntelliJ line-marker popup.
+            const inheritItems = inheritanceScalars(source);
             const parentsByLine = new Map<number, number[]>();
-            for (const item of inheritanceScalars(source)) {
+            for (const item of inheritItems) {
                 const line = document.positionAt(item.scalar.start).line;
                 const starts = parentsByLine.get(line) ?? [];
                 starts.push(item.scalar.start);
@@ -124,7 +125,7 @@ export class HelmfileCodeLensProvider implements vscode.CodeLensProvider {
                 if (node.kind !== 'pair') return;
                 const pair = node as YPair;
                 if (!isTemplateDeclaration(pair) || !pair.key) return;
-                const usages = inheritanceScalars(source).filter(item => item.name === pair.key).length;
+                const usages = inheritItems.reduce((count, item) => count + (item.name === pair.key ? 1 : 0), 0);
                 if (usages === 0) return;
                 lenses.push(
                     new vscode.CodeLens(lensRange(document, pair.keyStart, pair.keyEnd), {

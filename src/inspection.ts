@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
 import { isHelmfileName, type SourceFile } from './values';
+import { offsetRange } from './position';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
 import { repositoryService } from './repositoryService';
 import { EnvironmentService, repositoryDownloadsEnabled } from './settings';
@@ -87,7 +88,7 @@ export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]):
     for (const action of actions) {
         if (!action.closed) {
             diagnostics.push(
-                new vscode.Diagnostic(range(text, action.start, text.length), 'Unclosed Go template action: expected }}', vscode.DiagnosticSeverity.Warning),
+                new vscode.Diagnostic(offsetRange(text, action.start, text.length), 'Unclosed Go template action: expected }}', vscode.DiagnosticSeverity.Warning),
             );
             continue;
         }
@@ -96,7 +97,7 @@ export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]):
         const body = text.slice(action.bodyStart, action.bodyEnd).trim();
         if (body.length === 0) {
             diagnostics.push(
-                new vscode.Diagnostic(range(text, action.start, action.end), 'Empty Go template action: nothing between {{ and }}', vscode.DiagnosticSeverity.Warning),
+                new vscode.Diagnostic(offsetRange(text, action.start, action.end), 'Empty Go template action: nothing between {{ and }}', vscode.DiagnosticSeverity.Warning),
             );
         }
     }
@@ -109,7 +110,7 @@ export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]):
         while (covered < actions.length && actions[covered].end <= i) covered++;
         if (covered < actions.length && i >= actions[covered].start) continue;
         diagnostics.push(
-            new vscode.Diagnostic(range(text, i, i + 2), 'Unmatched Go template closing: no matching {{', vscode.DiagnosticSeverity.Warning),
+            new vscode.Diagnostic(offsetRange(text, i, i + 2), 'Unmatched Go template closing: no matching {{', vscode.DiagnosticSeverity.Warning),
         );
         i++;
     }
@@ -134,7 +135,7 @@ export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): 
         } else if (head === 'end') {
             if (stack.length === 0) {
                 diagnostics.push(
-                    new vscode.Diagnostic(range(text, action.start, action.end), '{{ end }} without a matching {{ if }}, {{ range }}, {{ with }}, {{ define }} or {{ block }}', vscode.DiagnosticSeverity.Warning),
+                    new vscode.Diagnostic(offsetRange(text, action.start, action.end), '{{ end }} without a matching {{ if }}, {{ range }}, {{ with }}, {{ define }} or {{ block }}', vscode.DiagnosticSeverity.Warning),
                 );
             } else {
                 stack.pop();
@@ -143,7 +144,7 @@ export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): 
             const open = stack[stack.length - 1];
             if (!open || (open.keyword !== 'if' && open.keyword !== 'range' && open.keyword !== 'with')) {
                 diagnostics.push(
-                    new vscode.Diagnostic(range(text, action.start, action.end), '{{ else }} outside of an {{ if }}, {{ range }} or {{ with }} block', vscode.DiagnosticSeverity.Warning),
+                    new vscode.Diagnostic(offsetRange(text, action.start, action.end), '{{ else }} outside of an {{ if }}, {{ range }} or {{ with }} block', vscode.DiagnosticSeverity.Warning),
                 );
             }
             // `else if ...` reuses the enclosing block's {{ end }} — depth stays.
@@ -154,7 +155,7 @@ export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): 
         // by the unclosed-action warning; don't double-report it.
         if (!open.action.closed) continue;
         diagnostics.push(
-            new vscode.Diagnostic(range(text, open.action.start, open.action.end), `Unclosed Go template block {{ ${open.keyword} }}: expected {{ end }}`, vscode.DiagnosticSeverity.Warning),
+            new vscode.Diagnostic(offsetRange(text, open.action.start, open.action.end), `Unclosed Go template block {{ ${open.keyword} }}: expected {{ end }}`, vscode.DiagnosticSeverity.Warning),
         );
     }
 }
@@ -332,23 +333,7 @@ function valueStart(source: SourceFile, pair: YPair): number {
 }
 
 function diagnosticAt(source: SourceFile, start: number, end: number, message: string, severity: vscode.DiagnosticSeverity): vscode.Diagnostic {
-    const diagnostic = new vscode.Diagnostic(range(source.text, start, end), message, severity);
+    const diagnostic = new vscode.Diagnostic(offsetRange(source.text, start, end), message, severity);
     diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
     return diagnostic;
-}
-
-function range(text: string, start: number, end: number): vscode.Range {
-    return new vscode.Range(position(text, start), position(text, end));
-}
-
-function position(text: string, offset: number): vscode.Position {
-    let line = 0;
-    let lastNewline = -1;
-    for (let i = 0; i < offset && i < text.length; i++) {
-        if (text[i] === '\n') {
-            line++;
-            lastNewline = i;
-        }
-    }
-    return new vscode.Position(line, offset - lastNewline - 1);
 }

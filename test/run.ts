@@ -906,5 +906,93 @@ entries:
     }
 }
 
+
+// ------------------------------------------------------- review round 3 fixes
+{
+    // R1: version completions must be scoped to the target chart only.
+    const { chartVersions } = require('../src/completion') as typeof import('../src/completion');
+    const { ChartIndex } = require('../src/chartIndex') as typeof import('../src/chartIndex');
+    const index: any = {
+        charts: new Map<string, any[]>([
+            ['fluent-bit', [{ name: 'fluent-bit', version: '3.1.0', description: '', deprecated: false }, { name: 'fluent-bit', version: '2.2.0', description: '', deprecated: true }]],
+            ['postgres', [{ name: 'postgres', version: '16.0.0', description: '', deprecated: false }]],
+        ]),
+    } as unknown as ChartIndex;
+    const httpRequest = { access: { name: 'fluent-bit', url: 'https://charts.example.com', oci: false }, chart: '' } as any;
+    eq(chartVersions('fluent-bit/fluent-bit', httpRequest, index).map(e => e.version).join(','), '3.1.0,2.2.0', 'chartVersions scopes to the HTTP chart');
+    const ociRequest = { access: { name: 'spark', url: 'registry.example.com/charts', oci: true }, chart: 'spark-web-proxy' } as any;
+    eq(chartVersions('spark/spark-web-proxy', ociRequest, index).length, 0, 'chartVersions OCI uses request.chart (absent here)');
+    eq(chartVersions('unknown/chart', httpQuery0(index), index).length, 0, 'chartVersions unknown chart is empty');
+
+    // R5: only diff may run without a release (whole state).
+    const { releaseInputProblem } = require('../src/operations') as typeof import('../src/operations');
+    eq(releaseInputProblem('template', ''), 'Release name is required for this action', 'template rejects empty release');
+    eq(releaseInputProblem('apply', '  '), 'Release name is required for this action', 'apply rejects blank release');
+    eq(releaseInputProblem('destroy', ''), 'Release name is required for this action', 'destroy rejects empty release');
+    eq(releaseInputProblem('diff', ''), null, 'diff allows whole state');
+
+    // R3: template declaration cache survives only until content changes.
+    const { bumpContentVersion } = require('../src/values') as typeof import('../src/values');
+    const { templateDeclarations } = require('../src/templates') as typeof import('../src/templates');
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'helmfile-r3cache-'));
+    try {
+        const stateFile = path.join(cacheDir, 'helmfile.yaml');
+        fs.writeFileSync(stateFile, 'templates:\n  first:\n    chart: a\n');
+        const first = templateDeclarations(vscode.Uri.file(stateFile), 'default');
+        check('cache sees first template', first.has('first') === true);
+        fs.writeFileSync(stateFile, 'templates:\n  second:\n    chart: a\n');
+        bumpContentVersion();
+        const second = templateDeclarations(vscode.Uri.file(stateFile), 'default');
+        check('cache invalidated on content change', second.has('second') === true && second.has('first') === false);
+    } finally {
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+
+    // R7: condition completions include keys merged from environment values files.
+    // R8: root `values:` list items complete file names; inline mappings do not.
+    const { fieldContextAt, contextualCompletions } = require('../src/contextualCompletion') as typeof import('../src/contextualCompletion');
+    const { readSource } = require('../src/values') as typeof import('../src/values');
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'helmfile-r3ctx-'));
+    try {
+        const statePath = path.join(projectDir, 'helmfile.yaml');
+        const text = [
+            'values:',
+            '  - comm',
+            'environments:',
+            '  production:',
+            '    values:',
+            '      - values/env.yaml',
+            'releases:',
+            '  - name: app',
+            '    chart: c',
+            '    condition: ',
+        ].join('\n');
+        fs.writeFileSync(statePath, text);
+        fs.mkdirSync(path.join(projectDir, 'values'));
+        fs.writeFileSync(path.join(projectDir, 'values', 'env.yaml'), 'install:\n  mysql: true\n');
+        fs.writeFileSync(path.join(projectDir, 'values', 'common.yaml'), 'a: 1\n');
+        const source = readSource(vscode.Uri.file(statePath))!;
+        const rootValuesOffset = text.indexOf('- comm') + '- co'.length;
+        const rootValuesField = fieldContextAt(source, rootValuesOffset);
+        check('root values list detected as sequence field', rootValuesField?.key === 'values' && rootValuesField.sequenceValue === true, JSON.stringify(rootValuesField));
+        const rootValuesList = contextualCompletions(source, rootValuesOffset, 'production');
+        check('root values list completes values files', rootValuesList != null && rootValuesList.items.some(i => String(i.label).startsWith('values/common.yaml')), JSON.stringify(rootValuesList?.items.slice(0, 3).map(i => i.label)));
+        const inlineText = 'values:\n  key: va';
+        const inlineSource = { uri: vscode.Uri.file(statePath), text: inlineText, tree: parseTree(inlineText) };
+        const inlineField = fieldContextAt(inlineSource, inlineText.indexOf('key:') + 2);
+        check('inline root values key is not a file list', inlineField?.key === 'key' && contextualCompletions(inlineSource, inlineText.indexOf('key:') + 2, 'production') === null, JSON.stringify(inlineField));
+        const conditionOffset = text.indexOf('condition: ') + 'condition: '.length;
+        const conditionList = contextualCompletions(source, conditionOffset, 'production');
+        check('condition offers keys from values files', conditionList != null && conditionList.items.some(i => i.label === '.Values.install.enabled'), JSON.stringify(conditionList?.items.map(i => i.label)));
+    } finally {
+        fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+}
+
+
+function httpQuery0(_index: unknown): Parameters<typeof import('../src/completion').chartVersions>[1] {
+    return { access: { name: 'fluent-bit', url: 'https://charts.example.com', oci: false }, chart: '' } as any;
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);

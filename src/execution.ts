@@ -99,13 +99,32 @@ export interface RunResult {
 
 const OUTPUT_LIMIT = 32 * 1024 * 1024;
 
+/** Kill the helmfile process and (POSIX) its whole process group. */
+function killTree(child: { pid?: number; kill: (signal?: NodeJS.Signals) => boolean }): void {
+    if (process.platform !== 'win32' && child.pid) {
+        try {
+            process.kill(-child.pid, 'SIGTERM');
+            return;
+        } catch {
+            // Group already gone — fall through to the direct kill.
+        }
+    }
+    child.kill();
+}
+
 /**
  * Run helmfile capturing stdout (bounded) and streaming stderr. Exit code 2
  * from a detailed diff is normalized to 0 by the caller when appropriate.
  */
 export function runHelmfile(built: BuiltCommand, token?: vscode.CancellationToken): Promise<RunResult> {
     return new Promise(resolve => {
-        const child = spawn(built.executable, built.args, { cwd: built.cwd, env: { ...process.env, ...built.env } });
+        const child = spawn(built.executable, built.args, {
+            cwd: built.cwd,
+            env: { ...process.env, ...built.env },
+            // New process group so cancelling kills helm/helm-diff children too,
+            // not just the helmfile parent.
+            detached: process.platform !== 'win32',
+        });
         let stdout = '';
         let stderr = '';
         let cancelled = false;
@@ -120,7 +139,7 @@ export function runHelmfile(built: BuiltCommand, token?: vscode.CancellationToke
         child.stderr.on('data', onStderr);
         token?.onCancellationRequested(() => {
             cancelled = true;
-            child.kill();
+            killTree(child);
         });
         child.on('error', error => {
             channel().appendLine(`Failed to start ${built.executable}: ${reason(error, null)}`);

@@ -32,10 +32,18 @@ export function isDeclaration(pair: YPair | null): boolean {
 }
 
 const declarationCache = new Map<string, Map<string, TemplateDeclaration>>();
+let declarationCacheStamp = -1;
 
 export function templateDeclarations(uri: vscode.Uri, environment: string): Map<string, TemplateDeclaration> {
+    const stamp = contentStamp();
+    if (stamp !== declarationCacheStamp) {
+        // Content changed: earlier generations would otherwise stay referenced
+        // forever (every keystroke produces a new stamp key).
+        declarationCache.clear();
+        declarationCacheStamp = stamp;
+    }
     const source = readSource(uri);
-    const cacheKey = `${source?.uri.toString() ?? uri.toString()}|${environment}|${contentStamp()}`;
+    const cacheKey = `${source?.uri.toString() ?? uri.toString()}|${environment}|${stamp}`;
     const cached = declarationCache.get(cacheKey);
     if (cached) return cached;
     const result = new Map<string, TemplateDeclaration>();
