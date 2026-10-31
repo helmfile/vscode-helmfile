@@ -55,6 +55,12 @@ class Uri {
     static parse(value: string): Uri { return new Uri(value.replace(/^file:\/\//, '')); }
     toString(): string { return 'file://' + this.path; }
 }
+class CodeLens {
+    command?: { title: string; command: string; arguments?: unknown[] };
+    constructor(readonly range: { start: unknown; end: unknown }, command?: { title: string; command: string; arguments?: unknown[] }) {
+        this.command = command;
+    }
+}
 class EventEmitter<T> {
     listeners = new Set<(e: T) => void>();
     event = (listener: (e: T) => void): { dispose(): void } => {
@@ -148,6 +154,7 @@ export = {
     },
     CompletionItemTag: { Deprecated: 1 },
     EventEmitter,
+    CodeLens,
     Disposable,
     ViewColumn: { Active: -1, Beside: -2, One: 1 },
     DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },

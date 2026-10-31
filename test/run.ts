@@ -16,7 +16,7 @@ import { parseTemplateOutput, parseDiffOutput, diffPartial } from '../src/output
 import { commandProblem, buildCommand, protectionProblem, isProtectedEnvironment, selectorOf } from '../src/execution';
 import { valuePathAt } from '../src/references';
 import { schemaContext } from '../src/schema';
-import { parseCompletionPath } from '../src/yamlTree';
+import { parseCompletionPath, parseTree } from '../src/yamlTree';
 import { tokenizeAction, SEMANTIC_TOKEN_TYPES } from '../src/semanticTokens';
 import { helmfileSymbols } from '../src/documentSymbol';
 import { HelmfileCodeActionProvider } from '../src/codeActions';
@@ -505,6 +505,108 @@ entries:
         check('state file names', isStateFileName('a.yaml') && isStateFileName('b.yml') && isStateFileName('c.yaml.gotmpl') && isStateFileName('d.yml.gotmpl') && !isStateFileName('README.md') && !isStateFileName('x.yaml.gotmpl2'), 'isStateFileName');
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------- dynamic environments
+{
+    const { inferEnvironments } = require('../src/environmentInference') as typeof import('../src/environmentInference');
+    const { environmentNames } = require('../src/values') as typeof import('../src/values');
+    const d7yHead = [
+        '# A workaround for https://github.com/roboll/helmfile/issues/1045',
+        'environments:',
+        '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+        '{{ range $key, $env := (index $environments "environments") }}',
+        '  {{ $key }}:',
+        '    values:',
+        '      - "environments/{{ $key }}/*.yaml.gotmpl"',
+        '{{- end }}',
+        '',
+        'helmfiles:',
+        '  - path: applications/dragonfly.yaml',
+    ].join('\n');
+
+    const temp = fs.mkdtempSync('helmfile-env-');
+    try {
+        fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments', 'dev'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments', 'staging'), { recursive: true });
+        fs.writeFileSync(path.join(temp, 'bases', 'environments.yaml'), 'environments:\n  dev:\n    values: [../environments/dev/*.yaml.gotmpl]\n  staging:\n    values: []\n');
+        fs.writeFileSync(path.join(temp, 'helmfile.yaml.gotmpl'), d7yHead);
+
+        const entry = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+        const source = { uri: entry, text: d7yHead, tree: parseTree(d7yHead) };
+        const tier1 = inferEnvironments(source);
+        check(
+            'tier 1: readFile+fromYaml+index chain',
+            tier1.length === 2 && tier1[0].name === 'dev' && tier1[1].name === 'staging' && tier1[0].origin === 'bases/environments.yaml',
+            JSON.stringify(tier1),
+        );
+
+        const names = environmentNames(entry, 'default');
+        check('environmentNames includes inferred', names.includes('dev') && names.includes('staging') && names.includes('default'), JSON.stringify(names));
+
+        // Tier 2: unreadable source falls back to directory inference.
+        fs.renameSync(path.join(temp, 'bases', 'environments.yaml'), path.join(temp, 'bases', 'environments.yaml.bak'));
+        const tier2 = inferEnvironments({ uri: entry, text: d7yHead, tree: parseTree(d7yHead) });
+        check(
+            'tier 2: directory inference fallback',
+            tier2.length === 2 && tier2.some(e => e.name === 'dev') && tier2.some(e => e.name === 'staging') && tier2[0].origin === 'environments/',
+            JSON.stringify(tier2),
+        );
+
+        // Filename templates (not directory segments) must not infer.
+        const filenameTemplate = d7yHead.replace('environments/{{ $key }}/*.yaml.gotmpl', 'values-{{ $key }}.yaml');
+        fs.renameSync(path.join(temp, 'bases', 'environments.yaml.bak'), path.join(temp, 'bases', 'environments.yaml'));
+        eq(inferEnvironments({ uri: entry, text: filenameTemplate, tree: parseTree(filenameTemplate) }).length, 2, 'filename template falls back to tier 1');
+
+        eq(inferEnvironments({ uri: entry, text: 'releases: []\n', tree: parseTree('releases: []\n') }).length, 0, 'no environments mapping');
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------- inferred environment lens
+{
+    const { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT } = require('../src/codeLens') as typeof import('../src/codeLens');
+    const { EnvironmentService } = require('../src/settings') as typeof import('../src/settings');
+    const d7yHead = [
+        'environments:',
+        '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+        '{{ range $key, $env := (index $environments "environments") }}',
+        '  {{ $key }}:',
+        '    values:',
+        '      - "environments/{{ $key }}/*.yaml.gotmpl"',
+        '{{- end }}',
+        '',
+        'helmfiles:',
+        '  - path: applications/dragonfly.yaml',
+    ].join('\n');
+    const temp = fs.mkdtempSync('helmfile-lens-');
+    try {
+        fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+        fs.writeFileSync(path.join(temp, 'bases', 'environments.yaml'), 'environments:\n  dev: {}\n  prod: {}\n');
+        const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+        const document = {
+            uri,
+            getText: () => d7yHead,
+            positionAt: (offset: number) => {
+                const before = d7yHead.slice(0, offset);
+                return new vscode.Position(before.split('\n').length - 1, offset - before.lastIndexOf('\n') - 1);
+            },
+        } as unknown as import('vscode').TextDocument;
+        const provider = new HelmfileCodeLensProvider(
+            new EnvironmentService({ workspaceState: { get: () => 'default', update: async () => undefined } } as unknown as import('vscode').ExtensionContext),
+        );
+        const lenses = provider.provideCodeLenses(document);
+        const inferred = lenses.find(lens => lens.command?.title.includes('(inferred)'));
+        check(
+            'inferred environment lens on environments key',
+            !!inferred && inferred.command!.command === HELMFILE_SELECT_ENVIRONMENT && inferred.command!.title.includes('dev') && inferred.command!.title.includes('prod'),
+            JSON.stringify(lenses.map(l => l.command?.title)),
+        );
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
     }
 }
 

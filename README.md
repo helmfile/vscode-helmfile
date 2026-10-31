@@ -76,6 +76,20 @@ with feature parity.
   (check mark on the current one); also **Helmfile: Select Environment**.
   Selection is persisted **per helmfile project** and drives completion,
   navigation and chart version resolution.
+- **Template-generated environments** are recognized statically — nothing is
+  executed. States that generate entries with Go templates (the common
+  workaround for [roboll/helmfile#1045](https://github.com/roboll/helmfile/issues/1045))
+  resolve through two tiers:
+  1. the pure read-only chain `readFile` → `fromYaml` → `index` over
+     template variables — the keys of the resulting mapping become
+     environment names (e.g. `bases/environments.yaml`);
+  2. directory inference from value paths like
+     `environments/{{ $key }}/*.yaml.gotmpl` — one environment per child
+     directory.
+
+  Inferred names appear in the environment switcher (a lens on the
+  `environments:` key marks them *inferred*) and behave like literal ones
+  everywhere else.
 
 ### Project detection
 

@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { YMapping, YNode, YPair, YTree, mappingGet, parseTree, rootMappings, scalarPathText } from './yamlTree';
+import { inferEnvironments } from './environmentInference';
 
 export const SEPARATOR = '\u001f';
 export const STATE_NAMES = ['helmfile.yaml.gotmpl', 'helmfile.yml.gotmpl', 'helmfile.yaml', 'helmfile.yml'];
@@ -393,6 +394,9 @@ class Builder {
                         }
                     }
                 }
+                // Template-generated environments survive no structured parse of
+                // the raw document; infer them from the source text directly.
+                for (const inferred of inferEnvironments(source)) this.environments.add(inferred.name);
                 if (!environmentPass) this.entries(source, valueOf(root, 'values'), null);
             }
         } finally {
