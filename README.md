@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 Helmfile state file support for VSCode, ported from the
-[helmfile-intellij-plugin](https://github.com/fennesstiv/helmfile-intellij-plugin)
+[helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
 with feature parity.
 
 ## Installation

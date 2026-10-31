@@ -3,7 +3,7 @@
 [English](README.md) | 简体中文
 
 面向 VSCode 的 Helmfile 状态文件支持,自
-[helmfile-intellij-plugin](https://github.com/fennesstiv/helmfile-intellij-plugin)
+[helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
 移植而来,功能对齐。
 
 ## 安装
