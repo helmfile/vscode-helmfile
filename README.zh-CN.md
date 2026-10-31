@@ -14,7 +14,7 @@
 `vscode-helmfile-<version>.vsix`,然后执行:
 
 ```bash
-code --install-extension vscode-helmfile-0.2.0.vsix --force
+code --install-extension vscode-helmfile-0.2.1.vsix --force
 ```
 
 `--force` 用于覆盖升级已安装的旧版本。安装后重载窗口(**Developer: Reload
