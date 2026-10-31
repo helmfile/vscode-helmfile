@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { projectScope } from './project';
 
 export interface HelmfileSettings {
     readonly helmfileExecutable: string;
@@ -31,8 +32,10 @@ export function mutatingCommandsEnabled(): boolean {
 }
 
 /**
- * The active Helmfile environment, saved per workspace like the IntelliJ
- * plugin's project-level setting.
+ * The active Helmfile environment, saved per helmfile project (the
+ * directory holding the entry state) like the IntelliJ plugin's
+ * project-level setting; unrelated projects in one workspace keep
+ * independent selections.
  */
 export class EnvironmentService implements vscode.Disposable {
     private readonly emitter = new vscode.EventEmitter<string>();
@@ -40,14 +43,21 @@ export class EnvironmentService implements vscode.Disposable {
 
     constructor(private readonly context: vscode.ExtensionContext) {}
 
-    get(): string {
-        return this.context.workspaceState.get<string>('helmfile.environment') || 'default';
+    get(uri?: vscode.Uri): string {
+        return this.context.workspaceState.get<string>(this.key(uri)) || 'default';
     }
 
-    set(environment: string): void {
-        if (environment === this.get()) return;
-        void this.context.workspaceState.update('helmfile.environment', environment);
+    set(environment: string, uri?: vscode.Uri): void {
+        const key = this.key(uri);
+        if (environment === this.context.workspaceState.get<string>(key)) return;
+        void this.context.workspaceState.update(key, environment);
         this.emitter.fire(environment);
+    }
+
+    private key(uri?: vscode.Uri): string {
+        const scope = uri ?? vscode.window.activeTextEditor?.document.uri;
+        const file = scope?.fsPath;
+        return file ? 'helmfile.environment:' + projectScope(file) : 'helmfile.environment';
     }
 
     dispose(): void {

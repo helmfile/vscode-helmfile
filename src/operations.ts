@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { EnvironmentService, mutatingCommandsEnabled, settings } from './settings';
 import { environmentNames, isHelmfileName, readSource } from './values';
+import { detectProject, projectFor } from './project';
 import {
     buildCommand,
     channel,
@@ -48,10 +49,10 @@ async function mutatingBlocked(operation: HelmfileOperationKind): Promise<boolea
 /** Tools → Helmfile: Select Environment. */
 export async function selectEnvironment(env: EnvironmentService, uri?: vscode.Uri): Promise<void> {
     const target = uri ?? activeStateFile();
-    const names = target ? environmentNames(target, env.get()) : [env.get()];
+    const names = target ? environmentNames(target, env.get(target)) : [env.get()];
     const picked = await vscode.window.showQuickPick(names, { placeHolder: 'Select the Helmfile environment' });
-    if (picked === undefined || picked === env.get()) return;
-    env.set(picked);
+    if (picked === undefined || picked === env.get(target)) return;
+    env.set(picked, target);
     void vscode.window.showInformationMessage(`Helmfile: environment set to '${picked}'.`);
 }
 
@@ -85,7 +86,7 @@ interface DialogInputs {
 
 /** Port of HelmfileReleaseDialog: environment → release → namespace → preview. */
 async function collectInputs(env: EnvironmentService, uri: vscode.Uri, operation: HelmfileOperationKind, suggestedRelease: string): Promise<DialogInputs | null> {
-    const names = environmentNames(uri, env.get());
+    const names = environmentNames(uri, env.get(uri));
     const environment =
         (await vscode.window.showQuickPick(names, { placeHolder: `Helmfile environment (${OPERATION_LABELS[operation]})`, ignoreFocusOut: true })) ?? null;
     if (environment === null) return null;
@@ -209,7 +210,17 @@ async function showDiffResult(viewer: OutputViewer, stdout: string, command: Hel
 function activeStateFile(): vscode.Uri | undefined {
     const active = vscode.window.activeTextEditor?.document;
     if (active && (active.languageId === 'helmfile' || isHelmfileName(path.basename(active.uri.fsPath)))) return active.uri;
-    return vscode.workspace.textDocuments.find(document => isHelmfileName(path.basename(document.uri.fsPath)))?.uri;
+    const open = vscode.workspace.textDocuments.find(document => isHelmfileName(path.basename(document.uri.fsPath)))?.uri;
+    if (open) return open;
+    // Entry fallback: any file inside a helmfile project addresses the
+    // project's entry state (helmfile's own default resolution).
+    const base = active?.uri;
+    const project = base ? projectFor(base.fsPath) : null;
+    if (project?.entries.length) return vscode.Uri.file(project.entries[0]);
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const rootProject = folder ? detectProject(folder.uri.fsPath) : null;
+    if (rootProject?.entries.length) return vscode.Uri.file(rootProject.entries[0]);
+    return undefined;
 }
 
 function releaseTargetAt(uri: vscode.Uri | undefined, offset: number | undefined): { name: string } | null {

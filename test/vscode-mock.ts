@@ -173,11 +173,13 @@ export = {
         showWarningMessage: async () => undefined,
         showErrorMessage: async () => undefined,
         withProgress: async <T>(_options: unknown, task: () => T) => task(),
+        onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
     },
     workspace: {
         textDocuments: [] as unknown[],
         workspaceFolders: [] as unknown[],
         findFiles: async () => [] as Uri[],
+        asRelativePath: (pathOrUri: string | Uri): string => (typeof pathOrUri === 'string' ? pathOrUri : pathOrUri.fsPath),
         getConfiguration: (section?: string) => ({
             get: (key: string): unknown =>
                 section === 'helmfile'
@@ -189,6 +191,7 @@ export = {
         getWorkspaceFolder: () => undefined,
         registerTextDocumentContentProvider: () => ({ dispose: () => {} }),
         onDidChangeTextDocument: () => ({ dispose: () => {} }),
+        onDidOpenTextDocument: () => ({ dispose: () => {} }),
         onDidSaveTextDocument: () => ({ dispose: () => {} }),
         onDidCloseTextDocument: () => ({ dispose: () => {} }),
     },
