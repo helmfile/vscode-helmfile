@@ -204,12 +204,9 @@ export function walk<T>(node: TreeNode, visit: (node: TreeNode) => T | null): T 
     if (result != null) return result;
     if (node.kind === 'mapping') {
         for (const pair of node.pairs) {
+            // The pair branch recurses into its own value.
             const found = walk(pair, visit);
             if (found != null) return found;
-            if (pair.value) {
-                const nested = walk(pair.value, visit);
-                if (nested != null) return nested;
-            }
         }
     } else if (node.kind === 'sequence') {
         for (const item of node.items) {

@@ -9,6 +9,7 @@
  *   values/secrets (list form), bases, helmfiles, helmfiles[].path
  *                 → files next to the state file
  *   chart: ./…    → local chart directories
+ *   set/setString name → dotted key paths from the chart's values.yaml
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -17,6 +18,8 @@ import * as vscode from 'vscode';
 import { ancestors, mappingGet, nodeAt, parseTree, rootMappings, scalarPathText, type YMapping, type YPair } from './yamlTree';
 import { templateDeclarations } from './templates';
 import { childKeys, valuesModel, type SourceFile } from './values';
+import { chart as chartOf } from './repositories';
+import { chartValuePaths, chartValuesContextForRelease } from './chartValues';
 
 /** Where the caret is: the field key it belongs to and its YAML context. */
 export interface FieldContext {
@@ -250,9 +253,35 @@ export function contextualCompletions(source: SourceFile, offset: number, enviro
             if (!typed.startsWith('.')) return null;
             return localChartCompletions(source, typed);
         }
+        case 'name': {
+            // `- name: key` under a release's `set:`/`setString:` list:
+            // dotted key paths from the chart's own values.yaml.
+            const parent = field.path[field.path.length - 1];
+            if (parent !== 'set' && parent !== 'setString') return null;
+            const release = releaseMappingAt(source, offset);
+            if (!release) return null;
+            const chart = chartOf(source, release, environment, new Set());
+            if (!chart || chart.includes('{{')) return null;
+            const context = chartValuesContextForRelease(source, chart, release, environment);
+            if (!context || !context.tree) return null;
+            const items = chartValuePaths(context)
+                .filter(candidate => !typed || candidate.key.startsWith(typed))
+                .map(candidate => item(candidate.key, vscode.CompletionItemKind.Property, candidate.preview ? `chart default: ${candidate.preview.slice(0, 80)}` : `chart value (${chart})`));
+            return new vscode.CompletionList(items, false);
+        }
         default:
             return null;
     }
+}
+
+/** Nearest enclosing mapping with a `chart` field (the release/template owner of a `set:` entry). */
+function releaseMappingAt(source: SourceFile, offset: number): YMapping | null {
+    let current = nodeAt(source.tree, Math.min(offset, Math.max(0, source.text.length - 1)));
+    while (current) {
+        if (current.kind === 'mapping' && mappingGet(current as YMapping, 'chart')) return current as YMapping;
+        current = current.parent;
+    }
+    return null;
 }
 
 /** Directory suggestions for `chart: ./…` local chart references. */

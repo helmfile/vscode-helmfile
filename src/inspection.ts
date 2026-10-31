@@ -4,13 +4,17 @@
  * unclosed Go template action warning.
  */
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
-import { mappingGet, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
+import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
 import { isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
 import { repositoryService } from './repositoryService';
 import { EnvironmentService, repositoryDownloadsEnabled } from './settings';
+import { ancestors } from './yamlTree';
+import { schemaContext, schemaFields } from './schema';
 
 export const HELMFILE_DIAGNOSTIC_SOURCE = 'helmfile';
 
@@ -59,10 +63,13 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     analyze(document: vscode.TextDocument): void {
         const text = document.getText();
         const diagnostics: vscode.Diagnostic[] = [];
+        const source: SourceFile = { uri: document.uri, text, tree: parseTree(text) };
         yamlSyntaxErrors(document, diagnostics);
         unclosedActions(text, diagnostics);
         templateBlocks(text, diagnostics);
-        repositoryDiagnostics({ uri: document.uri, text, tree: parseTree(text) }, this.env.get(), diagnostics);
+        repositoryDiagnostics(source, this.env.get(), diagnostics);
+        unknownFieldDiagnostics(source, diagnostics);
+        missingFileDiagnostics(source, this.env.get(), diagnostics);
         this.collection.set(document.uri, diagnostics);
     }
 
@@ -196,7 +203,7 @@ function invalidRepositoryUrl(url: string): boolean {
     }
 }
 
-function repositoryDiagnostics(source: SourceFile, environment: string, diagnostics: vscode.Diagnostic[]): void {
+export function repositoryDiagnostics(source: SourceFile, environment: string, diagnostics: vscode.Diagnostic[]): void {
     const model = repositoryModel(source.uri, environment);
     const named = new Map(namedMap(model.entries).map(repository => [repository.name, repository]));
 
@@ -323,7 +330,121 @@ function checkVersion(source: SourceFile, pair: YPair, environment: string, diag
         );
         diagnostic.code = 'helmfile.refreshRepositories';
         diagnostics.push(diagnostic);
+        return;
     }
+    const entries = snapshot.index.charts.get(name);
+    if (!entries || entries.length === 0) return;
+    const candidate = entries.find(entry => !entry.deprecated) ?? entries[0];
+    if (!candidate || candidate.version === version) return;
+    const diagnostic = diagnosticAt(
+        source,
+        valueStart(source, pair),
+        valueStart(source, pair) + version.length,
+        `Version '${version}' is outdated: ${chart} ${candidate.version} is available`,
+        vscode.DiagnosticSeverity.Information,
+    );
+    diagnostic.code = 'helmfile.updateVersion';
+    outdatedVersions.set(diagnostic, candidate.version);
+    diagnostics.push(diagnostic);
+}
+
+/** Side table for the update-version quick fix: diagnostic → latest version. */
+export const outdatedVersions = new WeakMap<vscode.Diagnostic, string>();
+
+const STRICT_CONTEXTS = new Set(['releases', 'repositories', 'dependencies', 'environment', 'helmDefaults', 'set', 'hooks', 'inherit', 'helmfiles']);
+const knownFieldsCache = new Map<string, Set<string>>();
+
+function knownFields(context: string): Set<string> {
+    let names = knownFieldsCache.get(context);
+    if (!names) {
+        names = new Set(schemaFields(context).map(field => field.name));
+        knownFieldsCache.set(context, names);
+    }
+    return names;
+}
+
+/** Side table for the remove-field quick fix: diagnostic → pair span. */
+export const unknownFields = new WeakMap<vscode.Diagnostic, { start: number; end: number }>();
+
+/**
+ * Unknown-field warnings for contexts the Helmfile schema fully describes
+ * (helmfile strict-decodes release/repository entries, so a typo like
+ * `insatlled:` fails at run time). Root-level keys stay unchecked: the
+ * state format allows more top-level keys than the completion schema lists.
+ */
+export function unknownFieldDiagnostics(source: SourceFile, diagnostics: vscode.Diagnostic[]): void {
+    for (const doc of source.tree.docs) {
+        if (!doc.root) continue;
+        walkAll(doc.root, node => {
+            if (node.kind !== 'pair') return;
+            const pair = node as YPair;
+            const key = pair.key;
+            if (!key || key.includes('{{')) return;
+            const path = ancestors(pair);
+            const context = schemaContext(path);
+            if (!STRICT_CONTEXTS.has(context)) return;
+            if (knownFields(context).has(key)) return;
+            const diagnostic = diagnosticAt(source, pair.keyStart, pair.keyEnd, `Unknown field '${key}' in ${context}`, vscode.DiagnosticSeverity.Warning);
+            unknownFields.set(diagnostic, { start: pair.start, end: pair.end });
+            diagnostics.push(diagnostic);
+        });
+    }
+}
+
+/** Side table for the create-file quick fix: diagnostic → absolute path. */
+export const missingFiles = new WeakMap<vscode.Diagnostic, string>();
+
+const ENV_NAME = /\{\{-?\s*\.Environment\.Name\s*-?\}\}/;
+
+
+/**
+ * Warn when a values/secrets/bases/helmfiles entry points at a file that
+ * does not exist on disk. Templated paths and globs are skipped: they only
+ * resolve at render time.
+ */
+export function missingFileDiagnostics(source: SourceFile, environment: string, diagnostics: vscode.Diagnostic[]): void {
+    for (const doc of source.tree.docs) {
+        if (!doc.root) continue;
+        walkAll(doc.root, node => {
+            if (node.kind === 'scalar') {
+                checkFileScalar(source, environment, node as YScalar, diagnostics);
+            } else if (node.kind === 'pair') {
+                checkFilePair(source, environment, node as YPair, diagnostics);
+            }
+        });
+    }
+}
+
+function checkFileScalar(source: SourceFile, environment: string, scalar: YScalar, diagnostics: vscode.Diagnostic[]): void {
+    const sequence = scalar.parent;
+    const owner = sequence && sequence.kind === 'sequence' ? sequence.parent : null;
+    if (!owner || owner.kind !== 'pair') return;
+    const pair = owner as YPair;
+    const a = ancestors(pair);
+    const ownerOk =
+        (pair.key === 'values' || pair.key === 'secrets' || pair.key === 'bases' || pair.key === 'helmfiles') &&
+        (a.length === 0 || (a.length === 2 && (a[0] === 'releases' || a[0] === 'templates' || a[0] === 'environments')));
+    if (!ownerOk) return;
+    pushIfMissing(source, environment, scalar, pair.key === 'helmfiles' ? 'Helmfile state' : 'Values', diagnostics);
+}
+
+function checkFilePair(source: SourceFile, environment: string, pair: YPair, diagnostics: vscode.Diagnostic[]): void {
+    // `helmfiles:` entries of mapping form carry the path in a `path:` pair.
+    if (pair.key !== 'path' || !pair.value || pair.value.kind !== 'scalar') return;
+    if (ancestors(pair).join('\u001f') !== 'helmfiles') return;
+    pushIfMissing(source, environment, pair.value as YScalar, 'Helmfile state', diagnostics);
+}
+
+function pushIfMissing(source: SourceFile, environment: string, scalar: YScalar, label: string, diagnostics: vscode.Diagnostic[]): void {
+    let raw = scalarPathText(scalar);
+    if (!raw || raw.includes('{{') || raw.includes('://') || raw.includes('*') || raw.includes('?') || raw.includes('[')) return;
+    raw = raw.replace(ENV_NAME, environment);
+    if (raw.includes('{{')) return;
+    const base = raw.startsWith('/') ? raw : path.join(path.dirname(source.uri.fsPath), raw);
+    if (fs.existsSync(base)) return;
+    const diagnostic = diagnosticAt(source, scalar.start, scalar.end, `${label} file does not exist: ${raw}`, vscode.DiagnosticSeverity.Warning);
+    missingFiles.set(diagnostic, base);
+    diagnostics.push(diagnostic);
 }
 
 function valueStart(source: SourceFile, pair: YPair): number {
