@@ -7,7 +7,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
-import { templateBlocks, unclosedActions, fillMaskedTemplateKeys } from '../src/inspection';
+import { templateBlocks, unclosedActions } from '../src/inspection';
+import { fillMaskedTemplateKeys } from '../src/templateScanner';
 import { allFunctions, findFunction } from '../src/functionCatalog';
 import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
 import { repositoryModel, query, alias } from '../src/repositories';
@@ -16,7 +17,7 @@ import { parseTemplateOutput, parseDiffOutput, diffPartial } from '../src/output
 import { commandProblem, buildCommand, protectionProblem, isProtectedEnvironment, selectorOf } from '../src/execution';
 import { valuePathAt } from '../src/references';
 import { schemaContext } from '../src/schema';
-import { parseCompletionPath } from '../src/yamlTree';
+import { parseCompletionPath, parseTree } from '../src/yamlTree';
 import { tokenizeAction, SEMANTIC_TOKEN_TYPES } from '../src/semanticTokens';
 import { helmfileSymbols } from '../src/documentSymbol';
 import { HelmfileCodeActionProvider } from '../src/codeActions';
@@ -505,6 +506,333 @@ entries:
         check('state file names', isStateFileName('a.yaml') && isStateFileName('b.yml') && isStateFileName('c.yaml.gotmpl') && isStateFileName('d.yml.gotmpl') && !isStateFileName('README.md') && !isStateFileName('x.yaml.gotmpl2'), 'isStateFileName');
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------- dynamic environments
+{
+    const { inferEnvironments } = require('../src/environmentInference') as typeof import('../src/environmentInference');
+    const { environmentNames } = require('../src/values') as typeof import('../src/values');
+    const d7yHead = [
+        '# A workaround for https://github.com/roboll/helmfile/issues/1045',
+        'environments:',
+        '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+        '{{ range $key, $env := (index $environments "environments") }}',
+        '  {{ $key }}:',
+        '    values:',
+        '      - "environments/{{ $key }}/*.yaml.gotmpl"',
+        '{{- end }}',
+        '',
+        'helmfiles:',
+        '  - path: applications/dragonfly.yaml',
+    ].join('\n');
+
+    const temp = fs.mkdtempSync('helmfile-env-');
+    try {
+        fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments', 'dev'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments', 'staging'), { recursive: true });
+        fs.writeFileSync(path.join(temp, 'bases', 'environments.yaml'), 'environments:\n  dev:\n    values: [../environments/dev/*.yaml.gotmpl]\n  staging:\n    values: []\n');
+        fs.writeFileSync(path.join(temp, 'helmfile.yaml.gotmpl'), d7yHead);
+
+        const entry = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+        const source = { uri: entry, text: d7yHead, tree: parseTree(d7yHead) };
+        const tier1 = inferEnvironments(source);
+        check(
+            'tier 1: readFile+fromYaml+index chain',
+            tier1.length === 2 && tier1[0].name === 'dev' && tier1[1].name === 'staging' && tier1[0].origin === 'bases/environments.yaml',
+            JSON.stringify(tier1),
+        );
+
+        const names = environmentNames(entry, 'default');
+        check('environmentNames includes inferred', names.includes('dev') && names.includes('staging') && names.includes('default'), JSON.stringify(names));
+
+        // Tier 2: unreadable source falls back to directory inference.
+        fs.renameSync(path.join(temp, 'bases', 'environments.yaml'), path.join(temp, 'bases', 'environments.yaml.bak'));
+        const tier2 = inferEnvironments({ uri: entry, text: d7yHead, tree: parseTree(d7yHead) });
+        check(
+            'tier 2: directory inference fallback',
+            tier2.length === 2 && tier2.some(e => e.name === 'dev') && tier2.some(e => e.name === 'staging') && tier2[0].origin === 'environments/',
+            JSON.stringify(tier2),
+        );
+
+        // Filename templates (not directory segments) must not infer.
+        const filenameTemplate = d7yHead.replace('environments/{{ $key }}/*.yaml.gotmpl', 'values-{{ $key }}.yaml');
+        fs.renameSync(path.join(temp, 'bases', 'environments.yaml.bak'), path.join(temp, 'bases', 'environments.yaml'));
+        eq(inferEnvironments({ uri: entry, text: filenameTemplate, tree: parseTree(filenameTemplate) }).length, 2, 'filename template falls back to tier 1');
+
+        eq(inferEnvironments({ uri: entry, text: 'releases: []\n', tree: parseTree('releases: []\n') }).length, 0, 'no environments mapping');
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------- inferred environment lens
+{
+    const { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT } = require('../src/codeLens') as typeof import('../src/codeLens');
+    const { EnvironmentService } = require('../src/settings') as typeof import('../src/settings');
+    const d7yHead = [
+        'environments:',
+        '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+        '{{ range $key, $env := (index $environments "environments") }}',
+        '  {{ $key }}:',
+        '    values:',
+        '      - "environments/{{ $key }}/*.yaml.gotmpl"',
+        '{{- end }}',
+        '',
+        'helmfiles:',
+        '  - path: applications/dragonfly.yaml',
+    ].join('\n');
+    const temp = fs.mkdtempSync('helmfile-lens-');
+    try {
+        fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+        fs.writeFileSync(path.join(temp, 'bases', 'environments.yaml'), 'environments:\n  dev: {}\n  prod: {}\n');
+        const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+        const document = {
+            uri,
+            getText: () => d7yHead,
+            positionAt: (offset: number) => {
+                const before = d7yHead.slice(0, offset);
+                return new vscode.Position(before.split('\n').length - 1, offset - before.lastIndexOf('\n') - 1);
+            },
+        } as unknown as import('vscode').TextDocument;
+        const provider = new HelmfileCodeLensProvider(
+            new EnvironmentService({ workspaceState: { get: () => 'default', update: async () => undefined } } as unknown as import('vscode').ExtensionContext),
+        );
+        const lenses = provider.provideCodeLenses(document);
+        const inferred = lenses.find(lens => lens.command?.title.includes('(inferred)'));
+        check(
+            'inferred environment lens on environments key',
+            !!inferred && inferred.command!.command === HELMFILE_SELECT_ENVIRONMENT && inferred.command!.title.includes('dev') && inferred.command!.title.includes('prod'),
+            JSON.stringify(lenses.map(l => l.command?.title)),
+        );
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------- conditional literal environments
+{
+    const { inferEnvironments } = require('../src/environmentInference') as typeof import('../src/environmentInference');
+    const conditional = [
+        'environments:',
+        '  default:',
+        '    values:',
+        '      - "defaults.yaml"',
+        '{{- if .Values | get "install.mysql_innodbcluster_d7y" false }}',
+        '  mysql-innodbcluster:',
+        '    values: []',
+        '{{- end }}',
+        '',
+        'releases: []',
+    ].join('\n');
+
+    const write = (dir: string, flagValue: string | null) => {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'helmfile.yaml.gotmpl'), conditional);
+        fs.writeFileSync(
+            path.join(dir, 'defaults.yaml'),
+            flagValue === null ? 'other: 1\n' : `install:\n  mysql_innodbcluster_d7y: ${flagValue}\n`,
+        );
+    };
+
+    // Flag true: the guarded literal entry is offered.
+    {
+        const temp = fs.mkdtempSync('helmfile-cond-');
+        try {
+            write(temp, 'true');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const result = inferEnvironments({ uri, text: conditional, tree: parseTree(conditional) }, 'default');
+            check(
+                'conditional entry offered when flag true',
+                result.some(e => e.name === 'mysql-innodbcluster') && result.some(e => e.name === 'default'),
+                JSON.stringify(result),
+            );
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+
+    // Flag absent, default false: the guarded entry is suppressed.
+    {
+        const temp = fs.mkdtempSync('helmfile-cond-');
+        try {
+            write(temp, null);
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const result = inferEnvironments({ uri, text: conditional, tree: parseTree(conditional) }, 'default');
+            check(
+                'conditional entry suppressed when default false',
+                !result.some(e => e.name === 'mysql-innodbcluster') && result.some(e => e.name === 'default'),
+                JSON.stringify(result),
+            );
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+
+    // Unresolvable condition (no environment passed): offered, best-effort.
+    {
+        const temp = fs.mkdtempSync('helmfile-cond-');
+        try {
+            write(temp, null);
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const result = inferEnvironments({ uri, text: conditional, tree: parseTree(conditional) });
+            check('unresolvable condition offered best-effort', result.some(e => e.name === 'mysql-innodbcluster'), JSON.stringify(result));
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+}
+
+// ------------------------------------------------- get-form value paths + expression hover
+{
+    const { evaluateExpressionAt } = require('../src/environmentInference') as typeof import('../src/environmentInference');
+
+    const pipeForm = '{{- if .Values | get "install.mysql_innodbcluster_d7y" false }}';
+    const pipeOffset = pipeForm.indexOf('.Values') + 2;
+    const pipeRef = valuePathAt(pipeForm, pipeOffset);
+    check(
+        'valuePathAt get pipe form',
+        pipeRef != null && pipeRef.key === ['install', 'mysql_innodbcluster_d7y'].join(SEPARATOR),
+        JSON.stringify(pipeRef),
+    );
+    const callRef = valuePathAt('{{ get .Values "a.b" true }}', 8);
+    check('valuePathAt get call form', callRef != null && callRef.key === ['a', 'b'].join(SEPARATOR), JSON.stringify(callRef));
+    const quotedOffset = pipeForm.indexOf('mysql_innodbcluster_d7y');
+    check('valuePathAt get quoted key cursor', valuePathAt(pipeForm, quotedOffset)?.key === ['install', 'mysql_innodbcluster_d7y'].join(SEPARATOR), 'quoted key cursor');
+
+    const conditional = [
+        'environments:',
+        '  default:',
+        '    values:',
+        '      - "defaults.yaml"',
+        '{{- if .Values | get "install.mysql_innodbcluster_d7y" false }}',
+        '  mysql-innodbcluster:',
+        '    values: []',
+        '{{- end }}',
+        '',
+        'releases: []',
+    ].join('\n');
+    const write = (dir: string, body: string) => {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'helmfile.yaml.gotmpl'), conditional);
+        fs.writeFileSync(path.join(dir, 'defaults.yaml'), body);
+    };
+    const ifOffset = conditional.indexOf('.Values | get');
+
+    {
+        const temp = fs.mkdtempSync('helmfile-eval-');
+        try {
+            write(temp, 'install:\n  mysql_innodbcluster_d7y: true\n');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const evaluated = evaluateExpressionAt({ uri, text: conditional, tree: parseTree(conditional) }, ifOffset, 'default');
+            check('evaluate get condition true', evaluated?.value.kind === 'text' && evaluated.value.text === 'true', JSON.stringify(evaluated));
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+    {
+        const temp = fs.mkdtempSync('helmfile-eval-');
+        try {
+            write(temp, 'other: 1\n');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const evaluated = evaluateExpressionAt({ uri, text: conditional, tree: parseTree(conditional) }, ifOffset + 20, 'default');
+            check(
+                'evaluate get condition default false',
+                evaluated?.value.kind === 'text' && evaluated.value.text === 'false' && evaluated.value.origin === 'default',
+                JSON.stringify(evaluated),
+            );
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+
+    // readFile/fromYaml chain with variable accumulation (d7y workaround head).
+    {
+        const temp = fs.mkdtempSync('helmfile-eval-');
+        try {
+            fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+            fs.writeFileSync(path.join(temp, 'bases/environments.yaml'), 'environments:\n  dev: {}\n  prod: {}\n');
+            const text = [
+                'environments:',
+                '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+                '{{ range $key, $env := (index $environments "environments") }}',
+                '  {{ $key }}:',
+                '{{- end }}',
+            ].join('\n');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const rangeOffset = text.indexOf('index $environments');
+            const evaluated = evaluateExpressionAt({ uri, text, tree: parseTree(text) }, rangeOffset, 'default');
+            check(
+                'evaluate range head via readFile chain',
+                evaluated?.value.kind === 'mapping' && evaluated.value.mapping.pairs.length === 2,
+                JSON.stringify(evaluated && (evaluated.value.kind === 'mapping' ? evaluated.value.mapping.pairs.map(p => p.key) : evaluated.value)),
+            );
+            // Hovering the {{- end }} action yields nothing.
+            eq(evaluateExpressionAt({ uri, text, tree: parseTree(text) }, text.indexOf('{{- end }}') + 4, 'default'), null, 'evaluate end action null');
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+}
+
+// ------------------------------------------------- dynamic environments values resolution
+{
+    const { valuesModel } = require('../src/values') as typeof import('../src/values');
+    const stateText = [
+        'environments:',
+        '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+        '{{ range $key, $env := (index $environments "environments") }}',
+        '  {{ $key }}:',
+        '    values:',
+        '      - "environments/{{ $key }}/*.yaml"',
+        '{{- end }}',
+        '',
+        'releases: []',
+    ].join('\n');
+    const temp = fs.mkdtempSync('helmfile-dynvals-');
+    try {
+        fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments/dev'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments/prod'), { recursive: true });
+        fs.writeFileSync(path.join(temp, 'helmfile.yaml.gotmpl'), stateText);
+        fs.writeFileSync(path.join(temp, 'bases/environments.yaml'), 'environments:\n  dev: {}\n  prod: {}\n');
+        fs.writeFileSync(path.join(temp, 'environments/dev/base.yaml'), 'install:\n  mysql: true\n');
+        fs.writeFileSync(path.join(temp, 'environments/prod/base.yaml'), 'install:\n  mysql: false\n');
+        const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+        const dev = valuesModel(uri, 'dev');
+        const devFlag = dev?.completionDefinitions.find(d => d.path === ['install', 'mysql'].join(SEPARATOR));
+        check('dynamic env values resolve for dev', devFlag != null && devFlag.preview === 'true' && devFlag.environment === 'dev', JSON.stringify(devFlag));
+        const prod = valuesModel(uri, 'prod');
+        const prodFlag = prod?.definitions.get(['install', 'mysql'].join(SEPARATOR));
+        check('dynamic env values resolve for prod', prodFlag != null && prodFlag.preview === 'false', JSON.stringify(prodFlag));
+        // A values file beside the state inherits the rendered model.
+        const valuesFile = vscode.Uri.file(path.join(temp, 'environments/dev/base.yaml'));
+        const beside = allDefinitions(valuesFile, 'dev');
+        check('values file inherits dynamic model', beside.some(d => d.path === ['install', 'mysql'].join(SEPARATOR)), JSON.stringify(beside.length));
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------- disk edits invalidate caches
+{
+    const { valuesModel, bumpContentVersion } = require('../src/values') as typeof import('../src/values');
+    const temp = fs.mkdtempSync('helmfile-invalidate-');
+    try {
+        fs.writeFileSync(path.join(temp, 'helmfile.yaml'), 'environments:\n  dev:\n    values:\n      - base.yaml\n');
+        fs.writeFileSync(path.join(temp, 'base.yaml'), 'replicas: 1\n');
+        const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml'));
+        const before = valuesModel(uri, 'dev');
+        check('model reads initial disk value', before?.definitions.get('replicas')?.preview === '1');
+        // External edit (not open in an editor): the watcher bumps the
+        // content version; the next model reads the new content.
+        fs.writeFileSync(path.join(temp, 'base.yaml'), 'replicas: 2\n');
+        bumpContentVersion();
+        const after = valuesModel(uri, 'dev');
+        check('model reflects disk edit after bump', after?.definitions.get('replicas')?.preview === '2');
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
     }
 }
 

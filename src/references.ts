@@ -44,6 +44,10 @@ export interface InheritanceReference {
 const ROOT_PATH = /(\$?\.(?:Values|StateValues|Environment\.Values)\.[A-Za-z0-9_.]*)/g;
 /** `index .Values "key.with.dots"` quoted keys. */
 const INDEX_CALL = /\bindex\s+(\$?\.(?:Values|StateValues|Environment\.Values)(?:\.[A-Za-z0-9_]+)*)((?:\s+"(?:[^"\\]|\\.)*")+)/g;
+/** `get .Values "key.with.dots" [default]` call form. */
+const GET_CALL = /\bget\s+(\$?\.(?:Values|StateValues|Environment\.Values)(?:\.[A-Za-z0-9_]+)*)\s+"((?:[^"\\]|\\.)*)"(?:\s+(?:"(?:[^"\\]|\\.)*"|true|false|nil|\d+(?:\.\d+)?))?/g;
+/** `.Values | get "key.with.dots" [default]` pipeline form. */
+const GET_PIPE = /(\$?\.(?:Values|StateValues|Environment\.Values)(?:\.[A-Za-z0-9_]+)*)\s*\|\s*get\s+"((?:[^"\\]|\\.)*)"(?:\s+(?:"(?:[^"\\]|\\.)*"|true|false|nil|\d+(?:\.\d+)?))?/g;
 /** String literal argument of readFile/isFile/isDir inside actions. */
 const FILE_FUNCTION = /\b(?:readFile|isFile|isDir)\s*\(\s*(?:"([^"\\]|\\.)*"|'([^'\\]|\\.)*')/g;
 
@@ -145,6 +149,17 @@ export function valuePathAt(text: string, offset: number): ValuePathReference | 
         const segments = [...stripValueRoot(base.replace(/^\$?/, '').split('.').filter(segment => segment.length > 0)), ...splitQuoted(quoted)];
         const key = valuesKeyPath(segments);
         return { key, range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + match[0].length) };
+    }
+
+    for (const pattern of [GET_PIPE, GET_CALL]) {
+        for (const match of matchAll(pattern, body)) {
+            if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
+            const base = match[1];
+            const quotedKey = match[2];
+            const segments = [...stripValueRoot(base.replace(/^\$?/, '').split('.').filter(segment => segment.length > 0)), ...quotedKey.split('.')];
+            const key = valuesKeyPath(segments);
+            return { key, range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + match[0].length) };
+        }
     }
 
     for (const match of matchAll(ROOT_PATH, body)) {

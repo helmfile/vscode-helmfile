@@ -53,7 +53,16 @@ with feature parity.
 
 - Go template / Sprig / Helmfile function documentation with signature,
   example and reference link.
-- Values paths show the resolved value, its source file and environment.
+- Values paths show the resolved value, its source file and environment —
+  including quoted keys via `index .Values "a.b"` and `get` in both forms
+  (`.Values | get "a.b" false` / `get .Values "a.b" false`).
+- Inside any template action, other expressions (`if`/`range` conditions,
+  `readFile … | fromYaml` chains, `get` defaults for keys no values file
+  defines) show their statically computed value with its provenance.
+- States with template-generated `environments:` entries (e.g. a `{{ range }}`
+  over `readFile … | fromYaml`) resolve each environment's `values:` files
+  after rendering the region, so values, completions and navigation work
+  there too.
 
 ### VSCode integration
 
@@ -76,6 +85,20 @@ with feature parity.
   (check mark on the current one); also **Helmfile: Select Environment**.
   Selection is persisted **per helmfile project** and drives completion,
   navigation and chart version resolution.
+- **Template-generated environments** are recognized statically — nothing is
+  executed. States that generate entries with Go templates (the common
+  workaround for [roboll/helmfile#1045](https://github.com/roboll/helmfile/issues/1045))
+  resolve through two tiers:
+  1. the pure read-only chain `readFile` → `fromYaml` → `index` over
+     template variables — the keys of the resulting mapping become
+     environment names (e.g. `bases/environments.yaml`);
+  2. directory inference from value paths like
+     `environments/{{ $key }}/*.yaml.gotmpl` — one environment per child
+     directory.
+
+  Inferred names appear in the environment switcher (a lens on the
+  `environments:` key marks them *inferred*) and behave like literal ones
+  everywhere else.
 
 ### Project detection
 

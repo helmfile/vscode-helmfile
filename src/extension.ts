@@ -3,7 +3,7 @@
  */
 import * as vscode from 'vscode';
 import { EnvironmentService } from './settings';
-import { closeOpenDocument, isHelmfileName, readSource, setOpenDocument, stateFor } from './values';
+import { bumpContentVersion, closeOpenDocument, isHelmfileName, readSource, setOpenDocument, stateFor } from './values';
 import { HelmfileCompletionProvider } from './completion';
 import { HelmfileDefinitionProvider, HelmfileReferencesProvider } from './references';
 import { HelmfileHoverProvider } from './hover';
@@ -92,6 +92,27 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
     );
     vscode.workspace.textDocuments.forEach(track);
+
+    // Edits to files on disk (values files, environment configs, included
+    // bases edited externally or in another window) invalidate the static
+    // model caches — open-document events alone never see them.
+    let diskInvalidateTimer: ReturnType<typeof setTimeout> | undefined;
+    const invalidateDiskFiles = (): void => {
+        if (diskInvalidateTimer) clearTimeout(diskInvalidateTimer);
+        diskInvalidateTimer = setTimeout(() => {
+            diskInvalidateTimer = undefined;
+            bumpContentVersion();
+            lenses.fire();
+            diagnostics.refreshAll();
+        }, 150);
+    };
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{yaml,yml,gotmpl,tpl}');
+    context.subscriptions.push(
+        watcher,
+        watcher.onDidChange(invalidateDiskFiles),
+        watcher.onDidCreate(invalidateDiskFiles),
+        watcher.onDidDelete(invalidateDiskFiles),
+    );
 
     // Repository metadata changes refresh diagnostics.
     context.subscriptions.push(repositoryService().onChanged(() => diagnostics.refreshAll()));

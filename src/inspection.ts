@@ -4,7 +4,7 @@
  * unclosed Go template action warning.
  */
 import * as vscode from 'vscode';
-import { TemplateScanner, type TemplateAction } from './templateScanner';
+import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
 import { isHelmfileName, type SourceFile } from './values';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
@@ -159,15 +159,6 @@ export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): 
     }
 }
 
-/**
- * Equal-length filler for template-derived mapping keys: `  {{ $key }}:`
- * masks to `        :` (a null key misaligned with its siblings); replacing
- * the blank key with `x` characters keeps the parse valid and offsets
- * unchanged. Only whitespace-only keys are touched.
- */
-export function fillMaskedTemplateKeys(masked: string): string {
-    return masked.replace(/^[ \t]+:(?=\s|$)/gm, line => 'x'.repeat(line.length - 1) + ':');
-}
 
 /**
  * Genuine YAML syntax errors, reported as red squiggles. The document is

@@ -8,6 +8,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { YMapping, YNode, YPair, YTree, mappingGet, parseTree, rootMappings, scalarPathText } from './yamlTree';
+import { environmentsRegion, inferEnvironments } from './environmentInference';
+import { TemplateScanner, fillMaskedTemplateKeys } from './templateScanner';
 
 export const SEPARATOR = '\u001f';
 export const STATE_NAMES = ['helmfile.yaml.gotmpl', 'helmfile.yml.gotmpl', 'helmfile.yaml', 'helmfile.yml'];
@@ -131,15 +133,25 @@ function hasStateRoot(tree: YTree): boolean {
 
 /* ---------------- values model ---------------- */
 
+const modelBuilding = new Set<string>();
+
 export function valuesModel(uri: vscode.Uri, environment: string): ValuesModel | null {
     const source = readSource(uri);
     if (!source) return null;
     const cacheKey = `${source.uri.toString()}|${environment}|${contentVersion}`;
     const cached = modelCache.get(cacheKey);
     if (cached) return cached;
-    const model = new Builder(source, environment).build();
-    modelCache.set(cacheKey, model);
-    return model;
+    // Environment inference may consult the model of the very state being
+    // built (`.Values` conditions); re-entry yields null instead of looping.
+    if (modelBuilding.has(cacheKey)) return null;
+    modelBuilding.add(cacheKey);
+    try {
+        const model = new Builder(source, environment).build();
+        modelCache.set(cacheKey, model);
+        return model;
+    } finally {
+        modelBuilding.delete(cacheKey);
+    }
 }
 
 /** Reverse lookup following every discovered environment. */
@@ -319,6 +331,33 @@ function escapeRegExp(text: string): string {
 
 /* ---------------- builder ---------------- */
 
+/**
+ * The `environments:` mapping of a state whose entries are template-generated
+ * (e.g. a `{{ range }}` over a readFile/fromYaml chain): range key variables
+ * are substituted with the environment name, the remaining actions are masked,
+ * and the document is re-parsed so the per-environment `values:` entries
+ * resolve like declared ones.
+ */
+function renderedEnvironmentsMapping(source: SourceFile, envName: string): YMapping | null {
+    const region = environmentsRegion(source);
+    if (!region) return null;
+    const regionText = source.text.slice(region.start, region.end);
+    // Range key variables inside the region stand for environment names.
+    const keyVariables = new Set<string>();
+    for (const match of regionText.matchAll(/\brange\s+\$(\w+)\s*(?:,\s*\$\w+\s*)?:=/g)) keyVariables.add(match[1]);
+    if (!keyVariables.size) return null;
+    let rendered = regionText;
+    for (const name of keyVariables) {
+        rendered = rendered.replace(new RegExp('\\{\\{-?\\s*\\$' + name + '\\s*-?\\}\\}', 'g'), envName);
+    }
+    const masked = fillMaskedTemplateKeys(TemplateScanner.mask(source.text.slice(0, region.start) + rendered + source.text.slice(region.end)));
+    for (const root of rootMappings(parseTree(masked))) {
+        const environments = valueOf(root, 'environments');
+        if (environments?.value && environments.value.kind === 'mapping') return environments.value;
+    }
+    return null;
+}
+
 class Builder {
     readonly values = new Map<string, ValuesDefinition>();
     readonly environments = new Set<string>();
@@ -384,15 +423,28 @@ class Builder {
                     }
                 }
                 const envs = valueOf(root, 'environments');
+                let envMapping: YMapping | null = null;
                 if (envs?.value && envs.value.kind === 'mapping') {
+                    envMapping = envs.value;
                     for (const pair of envs.value.pairs) if (pair.key) this.environments.add(pair.key);
-                    if (environmentPass) {
-                        const selected = envs.value.pairs.find(pair => pair.key === this.environment);
-                        if (selected?.value && selected.value.kind === 'mapping') {
-                            this.entries(source, mappingGet(selected.value, 'values'), this.environment);
+                }
+                if (environmentPass) {
+                    const selected = envMapping?.pairs.find(pair => pair.key === this.environment);
+                    if (selected?.value && selected.value.kind === 'mapping') {
+                        this.entries(source, mappingGet(selected.value, 'values'), this.environment);
+                    } else {
+                        // Template-generated entries: render the region for the
+                        // selected environment and resolve its values files.
+                        const rendered = renderedEnvironmentsMapping(source, this.environment);
+                        const renderedEntry = rendered?.pairs.find(pair => pair.key === this.environment);
+                        if (renderedEntry?.value && renderedEntry.value.kind === 'mapping') {
+                            this.entries(source, mappingGet(renderedEntry.value, 'values'), this.environment);
                         }
                     }
                 }
+                // Template-generated environments survive no structured parse of
+                // the raw document; infer them from the source text directly.
+                for (const inferred of inferEnvironments(source, this.environment)) this.environments.add(inferred.name);
                 if (!environmentPass) this.entries(source, valueOf(root, 'values'), null);
             }
         } finally {
