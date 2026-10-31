@@ -59,6 +59,10 @@ with feature parity.
 - Inside any template action, other expressions (`if`/`range` conditions,
   `readFile … | fromYaml` chains, `get` defaults for keys no values file
   defines) show their statically computed value with its provenance.
+- States with template-generated `environments:` entries (e.g. a `{{ range }}`
+  over `readFile … | fromYaml`) resolve each environment's `values:` files
+  after rendering the region, so values, completions and navigation work
+  there too.
 
 ### VSCode integration
 

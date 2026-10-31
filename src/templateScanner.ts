@@ -79,3 +79,13 @@ export class TemplateScanner {
 function isWhitespace(c: number): boolean {
     return c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d || (c >= 0x1c && c <= 0x20);
 }
+
+/**
+ * Equal-length filler for template-derived mapping keys: `  {{ $key }}:`
+ * masks to `        :` (a null key misaligned with its siblings); replacing
+ * the blank key with `x` characters keeps the parse valid and offsets
+ * unchanged. Only whitespace-only keys are touched.
+ */
+export function fillMaskedTemplateKeys(masked: string): string {
+    return masked.replace(/^[ \t]+:(?=\s|$)/gm, line => 'x'.repeat(line.length - 1) + ':');
+}

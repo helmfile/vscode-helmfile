@@ -433,7 +433,7 @@ function expressionOf(body: string): string | null {
  * document separator. (The masked-document parse cannot be used here:
  * templated keys fill whole lines, which breaks the mapping structure.)
  */
-function environmentsRegion(source: SourceFile): { start: number; end: number } | null {
+export function environmentsRegion(source: SourceFile): { start: number; end: number } | null {
     const text = source.text;
     const lines = text.split('\n');
     let offset = 0;

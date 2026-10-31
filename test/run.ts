@@ -7,7 +7,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
-import { templateBlocks, unclosedActions, fillMaskedTemplateKeys } from '../src/inspection';
+import { templateBlocks, unclosedActions } from '../src/inspection';
+import { fillMaskedTemplateKeys } from '../src/templateScanner';
 import { allFunctions, findFunction } from '../src/functionCatalog';
 import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
 import { repositoryModel, query, alias } from '../src/repositories';
@@ -772,6 +773,45 @@ entries:
         } finally {
             fs.rmSync(temp, { recursive: true, force: true });
         }
+    }
+}
+
+// ------------------------------------------------- dynamic environments values resolution
+{
+    const { valuesModel } = require('../src/values') as typeof import('../src/values');
+    const stateText = [
+        'environments:',
+        '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+        '{{ range $key, $env := (index $environments "environments") }}',
+        '  {{ $key }}:',
+        '    values:',
+        '      - "environments/{{ $key }}/*.yaml"',
+        '{{- end }}',
+        '',
+        'releases: []',
+    ].join('\n');
+    const temp = fs.mkdtempSync('helmfile-dynvals-');
+    try {
+        fs.mkdirSync(path.join(temp, 'bases'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments/dev'), { recursive: true });
+        fs.mkdirSync(path.join(temp, 'environments/prod'), { recursive: true });
+        fs.writeFileSync(path.join(temp, 'helmfile.yaml.gotmpl'), stateText);
+        fs.writeFileSync(path.join(temp, 'bases/environments.yaml'), 'environments:\n  dev: {}\n  prod: {}\n');
+        fs.writeFileSync(path.join(temp, 'environments/dev/base.yaml'), 'install:\n  mysql: true\n');
+        fs.writeFileSync(path.join(temp, 'environments/prod/base.yaml'), 'install:\n  mysql: false\n');
+        const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+        const dev = valuesModel(uri, 'dev');
+        const devFlag = dev?.completionDefinitions.find(d => d.path === ['install', 'mysql'].join(SEPARATOR));
+        check('dynamic env values resolve for dev', devFlag != null && devFlag.preview === 'true' && devFlag.environment === 'dev', JSON.stringify(devFlag));
+        const prod = valuesModel(uri, 'prod');
+        const prodFlag = prod?.definitions.get(['install', 'mysql'].join(SEPARATOR));
+        check('dynamic env values resolve for prod', prodFlag != null && prodFlag.preview === 'false', JSON.stringify(prodFlag));
+        // A values file beside the state inherits the rendered model.
+        const valuesFile = vscode.Uri.file(path.join(temp, 'environments/dev/base.yaml'));
+        const beside = allDefinitions(valuesFile, 'dev');
+        check('values file inherits dynamic model', beside.some(d => d.path === ['install', 'mysql'].join(SEPARATOR)), JSON.stringify(beside.length));
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
     }
 }
 
