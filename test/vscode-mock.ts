@@ -40,6 +40,7 @@ class CompletionItem {
     filterText?: string;
     tags?: number[];
     command?: { command: string; title: string };
+    range?: unknown;
     constructor(label: string, kind?: number) { this.label = label; this.kind = kind; }
 }
 class CompletionList {

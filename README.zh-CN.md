@@ -47,7 +47,7 @@ Host),自带 `examples/` 下的示例状态文件。
   `environments`、`helmDefaults`……)的字段补全,带类型与描述。
 - **块补全**:输入 `releases`、`repositories` 或 `dependencies`(或列表项
   `- release`、`- repository`、`- dependency`)补全为 Tab 逐字段跳转的代码
-  片段;version 占位符默认填最新已发布版本。
+  片段。
 - **仓库补全**:`chart:` 补全已声明的仓库别名;`repository/chart` 补全从
   Helm index 下载的 chart 名;`version:` 补全该 chart 的版本(最新优先)。
   OCI 仓库使用 tag 列表。

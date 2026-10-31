@@ -17,6 +17,7 @@ import { chart, query, repositoryModel, type RepositoryQuery } from './repositor
 import type { ChartEntry, ChartIndex } from './chartIndex';
 import { repositoryService } from './repositoryService';
 import { contextualCompletions, localChartCompletions } from './contextualCompletion';
+import { offsetRange } from './position';
 
 /** Completion for values paths inside Go template actions, e.g. `.Values.image.` */
 const PATH_PREFIX = /(\$?\.(?:Values|StateValues|Environment\.Values)\.)([A-Za-z0-9_.]*)$/;
@@ -44,6 +45,12 @@ const CONTEXT_PATHS = [
 export function chartVersions(chartText: string, request: RepositoryQuery, index: ChartIndex): readonly ChartEntry[] {
     const name = request.access.oci ? request.chart : chartText.slice(chartText.indexOf('/') + 1);
     return index.charts.get(name) ?? [];
+}
+
+/** Length of the segment being completed after the last `.` of a value path. */
+function segmentLength(partial: string): number {
+    const lastDot = partial.lastIndexOf('.');
+    return lastDot >= 0 ? partial.length - lastDot - 1 : partial.length;
 }
 
 export class HelmfileCompletionProvider implements vscode.CompletionItemProvider {
@@ -88,6 +95,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                 item.detail = suggestion.value === '' ? '(empty)' : suggestion.value.slice(0, 80);
                 item.documentation = new vscode.MarkdownString(`Environment variable from the ${suggestion.source}.`);
                 item.insertText = suggestion.name;
+                item.range = offsetRange(text, offset - envMatch[1].length, offset);
                 item.sortText = String(rank++).padStart(4, '0') + suggestion.name;
                 items.push(item);
             }
@@ -109,23 +117,31 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                 item.detail = definition.preview || key;
                 item.documentation = new vscode.MarkdownString(sourceLabel(definition));
                 item.insertText = key;
+                item.range = offsetRange(text, offset - segmentLength(pathMatch[2]), offset);
                 items.push(item);
             }
             return new vscode.CompletionList(items, false);
         }
 
         const items: vscode.CompletionItem[] = [];
+        // Replace the whole partial token: the leading `.`/`$` of `.Values`
+        // etc. is not part of VSCode's default word definition, so without an
+        // explicit range acceptance appends to the typed dot (`..Values`).
+        const wordMatch = /[$.A-Za-z_][A-Za-z0-9_.$]*$/.exec(head);
+        const replace = offsetRange(text, offset - (wordMatch ? wordMatch[0].length : 0), offset);
         for (const func of allFunctions()) {
             const item = new vscode.CompletionItem(func.name, vscode.CompletionItemKind.Function);
             item.detail = func.signature;
             item.documentation = functionMarkdown(func);
             item.insertText = func.name;
+            item.range = replace;
             items.push(item);
         }
         for (const path of CONTEXT_PATHS) {
             const item = new vscode.CompletionItem(path, vscode.CompletionItemKind.Variable);
             item.detail = 'Helmfile state value path';
             item.insertText = path;
+            item.range = replace;
             items.push(item);
         }
         return new vscode.CompletionList(items, false);
@@ -143,19 +159,26 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         if (context !== 'releases' && context !== 'dependencies') return null;
 
         const env = this.env();
+        // Chart names/versions contain `-` and `/`, which the default word
+        // definition treats as separators — replace the whole typed value.
+        const replace = offsetRange(source.text, offset - value.length, offset);
 
         if (field === 'chart') {
-            if (value.startsWith('.')) return localChartCompletions(source, value);
-            return this.chartCompletions(source.uri, env, value);
+            if (value.startsWith('.')) {
+                const list = localChartCompletions(source, value);
+                for (const item of list.items) item.range = replace;
+                return list;
+            }
+            return this.chartCompletions(source.uri, env, value, replace);
         }
 
         const pair = keyPairAt(source.tree, offset);
         const mapping = pair && pair.value && pair.value.kind === 'mapping' ? pair.value : enclosingMapping(nodeAt(source.tree, offset));
         if (!mapping) return new vscode.CompletionList([], false);
-        return this.versionCompletions(source, mapping, env);
+        return this.versionCompletions(source, mapping, env, replace);
     }
 
-    private chartCompletions(uri: vscode.Uri, env: string, value: string): vscode.CompletionList {
+    private chartCompletions(uri: vscode.Uri, env: string, value: string, replace: vscode.Range): vscode.CompletionList {
         const model = repositoryModel(uri, env);
         const slash = value.indexOf('/');
         const aliasPart = slash >= 0 ? value.slice(0, slash) : value;
@@ -169,6 +192,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                 item.documentation = new vscode.MarkdownString(entry.access.url || entry.name);
                 item.insertText = entry.name + '/';
                 item.command = { command: 'editor.action.triggerSuggest', title: 'Suggest' };
+                item.range = replace;
                 items.push(item);
             }
             return new vscode.CompletionList(items, false);
@@ -190,6 +214,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                     if (versions.every(version => version.deprecated)) {
                         item.tags = [vscode.CompletionItemTag.Deprecated];
                     }
+                    item.range = replace;
                     items.push(item);
                 }
             } else {
@@ -203,7 +228,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         return new vscode.CompletionList([item], false);
     }
 
-    private versionCompletions(source: SourceFile, mapping: YMapping, env: string): vscode.CompletionList {
+    private versionCompletions(source: SourceFile, mapping: YMapping, env: string, replace: vscode.Range): vscode.CompletionList {
         const chartText = chart(source, mapping, env, new Set());
         const request = query(source.uri, chartText, env);
         const items: vscode.CompletionItem[] = [];
@@ -215,6 +240,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                 const item = new vscode.CompletionItem(entry.version, vscode.CompletionItemKind.Constant);
                 item.sortText = String(order++).padStart(6, '0');
                 item.insertText = entry.version;
+                item.range = replace;
                 if (entry.deprecated) item.tags = [vscode.CompletionItemTag.Deprecated];
                 items.push(item);
             }
@@ -230,6 +256,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         if (!path) return new vscode.CompletionList([], false);
         const mapping = enclosingMapping(nodeAt(source.tree, offset)) ?? rootMappings(source.tree)[0];
         const existing = new Set<string>(mapping ? mapping.pairs.map((pair: YPair) => pair.key) : []);
+        const replace = offsetRange(source.text, offset - typedWord(source.text, offset).length, offset);
         const items: vscode.CompletionItem[] = [];
         for (const key of chartValueKeys(context, path)) {
             if (existing.has(key.key)) continue;
@@ -237,6 +264,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
             item.detail = key.preview ? `chart default: ${key.preview.slice(0, 100)}` : `chart value (${context.chart})`;
             item.documentation = new vscode.MarkdownString(`Key defined by \`${context.chart}\`'s values.yaml.`);
             item.insertText = new vscode.SnippetString(key.key + ': ');
+            item.range = replace;
             items.push(item);
         }
         return new vscode.CompletionList(items, false);
@@ -248,26 +276,38 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         const context = schemaContext(path);
         const items: vscode.CompletionItem[] = [];
 
-        if (context === 'releases' || context === 'dependencies' || context === 'repositories') {
-            const word = path.length ? path[path.length - 1] : '';
-            const trigger = context === 'releases' ? 'release' : context === 'dependencies' ? 'dependency' : 'repository';
-            if (word === trigger || trigger.startsWith(word)) {
-                const item = new vscode.CompletionItem(trigger + ' (block)', vscode.CompletionItemKind.Snippet);
-                item.detail = 'Helmfile block';
-                item.documentation = new vscode.MarkdownString('Insert the required fields; Tab moves between values.');
-                item.insertText = blockSnippet(context);
-                item.sortText = '00000';
-                items.push(item);
-            }
+        // Two IntelliJ block forms: the section key typed at the root
+        // (`releases:` + first item) and the alias typed as a list item
+        // (`- release` expands into name/chart/version). The replace range
+        // must cover the typed word — appending would double it.
+        const typed = typedWord(source.text, offset);
+        const sectionAtRoot = context === ''
+            ? (['releases', 'repositories'].find(name => name.startsWith(typed) && typed.length > 0) ?? null)
+            : null;
+        const listItem = context === 'releases' || context === 'dependencies' || context === 'repositories'
+            ? (context === 'releases' ? 'release' : context === 'dependencies' ? 'dependency' : 'repository')
+            : null;
+        const trigger = sectionAtRoot ?? (listItem && listItem.startsWith(typed) ? listItem : null);
+        if (trigger) {
+            const item = new vscode.CompletionItem(trigger + ' (block)', vscode.CompletionItemKind.Snippet);
+            item.detail = 'Helmfile block';
+            item.documentation = new vscode.MarkdownString('Insert the required fields; Tab moves between values.');
+            item.insertText = blockSnippet(trigger, sectionAtRoot != null, source.text, offset);
+            item.sortText = '00000';
+            item.range = offsetRange(source.text, offset - typed.length, offset);
+            items.push(item);
         }
 
         // Keys already present in the enclosing mapping are noise: hide them.
         const mapping = enclosingMapping(nodeAt(source.tree, offset)) ?? rootMappings(source.tree)[0];
         const existing = new Set<string>(mapping ? mapping.pairs.map((pair: YPair) => pair.key) : []);
         const order = FIELD_ORDER[context] ?? [];
+        const replace = offsetRange(source.text, offset - typedWord(source.text, offset).length, offset);
         for (const field of schemaFields(context)) {
             if (existing.has(field.name)) continue;
-            items.push(fieldItem(field, sortKey(order.indexOf(field.name), field.name)));
+            const item = fieldItem(field, sortKey(order.indexOf(field.name), field.name));
+            item.range = replace;
+            items.push(item);
         }
         return new vscode.CompletionList(items, false);
     }
@@ -315,19 +355,32 @@ function lastSegment(path: string): string {
     return index >= 0 ? path.slice(index + 1) : path;
 }
 
+/** Partial mapping key typed on the current line (letters, like parseCompletionPath's prefix charset). */
+function typedWord(text: string, offset: number): string {
+    const lineStart = text.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+    const match = /[A-Za-z_]+$/.exec(text.slice(lineStart, offset));
+    return match ? match[0] : '';
+}
+
 /**
- * IntelliJ's block templates expand into a full list item. The VSCode port
- * offers a snippet that appends the item under the typed key.
+ * IntelliJ's block templates: at the root the section key plus its first
+ * list item; inside the list the alias word expands into the item's fields.
  */
-function blockSnippet(context: string): vscode.SnippetString {
-    switch (context) {
-        case 'repositories':
-            return new vscode.SnippetString('repository\n- name: ${1:name}\n  url: ${2:https://}');
-        case 'dependencies':
-            return new vscode.SnippetString('dependency\n- chart: ${1:chart}\n  version: ${2:version}');
-        default:
-            return new vscode.SnippetString('release\n- name: ${1:name}\n  chart: ${2:chart}\n  version: ${3:version}');
+function blockSnippet(trigger: string, section: boolean, text: string, offset: number): vscode.SnippetString {
+    const lineStart = text.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+    const line = text.slice(lineStart, offset);
+    const lead = /^[ \t]*/.exec(line)?.[0] ?? '';
+    const P = (n: number, v: string): string => '$' + `{${n}:${v}}`;
+    const fields = trigger === 'repositories'
+        ? `name: ${P(1, 'name')}\n${lead}  url: ${P(2, 'https://')}`
+        : trigger === 'dependencies' || trigger === 'dependency'
+            ? `chart: ${P(1, 'chart')}\n${lead}  version: ${P(2, 'version')}`
+            : `name: ${P(1, 'name')}\n${lead}  chart: ${P(2, 'chart')}\n${lead}  version: ${P(3, 'version')}`;
+    if (section) {
+        const name = trigger === 'repositories' ? 'repositories' : 'releases';
+        return new vscode.SnippetString(`${name}:\n${lead}  - ${fields}`);
     }
+    return new vscode.SnippetString(fields);
 }
 
 /** Nearest mapping that contains `node`. */
