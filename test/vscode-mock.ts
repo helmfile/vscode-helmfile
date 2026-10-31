@@ -139,6 +139,8 @@ class WorkspaceEdit {
     private readonly edits: unknown[] = [];
     delete(_uri: unknown, _range: unknown): void { this.edits.push({ type: 'delete' }); }
     insert(_uri: unknown, _position: unknown, _text: string): void { this.edits.push({ type: 'insert', text: _text }); }
+    replace(_uri: unknown, _range: unknown, _text: string): void { this.edits.push({ type: 'replace', text: _text }); }
+    createFile(_uri: unknown, _options?: unknown): void { this.edits.push({ type: 'createFile' }); }
     get size(): number { return this.edits.length; }
 }
 class StatusBarSpaceItem {

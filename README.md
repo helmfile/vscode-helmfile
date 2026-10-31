@@ -34,6 +34,15 @@ with feature parity.
   `helmfiles:` / `path:` offer files next to the state, `chart: ./…`
   offers local chart directories. Field completion hides keys already
   present in the mapping and ranks frequently-used fields first.
+- **Chart-aware values completion**: keys in a release's values files
+  (`values/*.yaml.gotmpl`) complete from the chart's own `values.yaml`
+  defaults — local charts read from disk, remote charts from the download
+  cache — and `set:` / `setString:` name entries offer dotted key paths
+  (`image.tag`) with each key's chart default as the detail.
+- **Environment variable completion**: inside `{{ env "…" }}` and
+  `{{ requiredEnv "…" }}` quotes, variables come from the extension
+  host environment and `.env` / `.env.local` files at the workspace root
+  (project-local entries first, values shown in the detail).
 
 ### Navigation
 
@@ -133,7 +142,15 @@ yaml.gotmpl,yml.gotmpl}` (sorted). Layouts the CLI would refuse to run
 
 - Repository diagnostics: missing names/URLs, duplicate aliases, undeclared
   `chart:` prefixes, charts missing from the index, unavailable exact
-  versions.
+  versions, and an outdated-version hint (with a one-click update to the
+  newest cached version) when a pinned release version is behind the index.
+- Unknown-field warnings for mappings the Helmfile schema fully describes
+  (`releases`, `repositories`, `dependencies`, …) with a quick fix that
+  removes the whole entry — catches typos like `insatlled:` before helmfile
+  strict-decodes them at run time.
+- Missing-file warnings when a `values:` / `secrets:` / `bases:` /
+  `helmfiles:` entry points at a file that does not exist, with a quick fix
+  that creates it (parent directories included).
 - Unclosed / empty / orphan Go template delimiters and unmatched
   `if` / `range` / `with` / `define` / `block` blocks, plus YAML syntax
   errors — each with quick fixes.

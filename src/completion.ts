@@ -7,6 +7,8 @@
 import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
 import { allFunctions, functionMarkdown } from './functionCatalog';
+import { envVarSuggestions } from './envVars';
+import { chartValueKeys, chartValuesContextFor, type ChartValuesContext } from './chartValues';
 import { nodeAt, parseTree, rootMappings, type YPair, type YMapping } from './yamlTree';
 import { completionPath, schemaContext, schemaFields, type Field } from './schema';
 import { childKeys, SEPARATOR, valuesModel, type SourceFile, type ValuesDefinition } from './values';
@@ -60,6 +62,12 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
 
         const tree = parseTree(text);
         const source: SourceFile = { uri, text, tree };
+
+        // Values files (*.yaml.gotmpl under a release's `values:` list) get
+        // chart-aware key completion instead of state-field completion.
+        const chartValues = chartValuesContextFor(uri, this.env());
+        if (chartValues) return this.chartValuesCompletions(source, offset, chartValues);
+
         const repository = this.repositoryCompletions(source, offset, prefix);
         if (repository) return repository;
 
@@ -71,6 +79,20 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
 
     private actionCompletions(uri: vscode.Uri, text: string, offset: number): vscode.CompletionList {
         const head = text.slice(Math.max(0, offset - 500), offset);
+        const envMatch = /\b(?:env|requiredEnv)\s*"([^"\r\n]*)$/.exec(head);
+        if (envMatch) {
+            const items: vscode.CompletionItem[] = [];
+            let rank = 0;
+            for (const suggestion of envVarSuggestions()) {
+                const item = new vscode.CompletionItem(suggestion.name, vscode.CompletionItemKind.Variable);
+                item.detail = suggestion.value === '' ? '(empty)' : suggestion.value.slice(0, 80);
+                item.documentation = new vscode.MarkdownString(`Environment variable from the ${suggestion.source}.`);
+                item.insertText = suggestion.name;
+                item.sortText = String(rank++).padStart(4, '0') + suggestion.name;
+                items.push(item);
+            }
+            return new vscode.CompletionList(items, false);
+        }
         const pathMatch = PATH_PREFIX.exec(head);
         if (pathMatch) {
             const parent = pathMatch[1] + pathMatch[2];
@@ -198,6 +220,24 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
             }
         } else {
             items.push(...advertise(snapshot));
+        }
+        return new vscode.CompletionList(items, false);
+    }
+
+    private chartValuesCompletions(source: SourceFile, offset: number, context: ChartValuesContext): vscode.CompletionList {
+        if (!context.tree) return new vscode.CompletionList([], false);
+        const path = completionPath(source.text, offset);
+        if (!path) return new vscode.CompletionList([], false);
+        const mapping = enclosingMapping(nodeAt(source.tree, offset)) ?? rootMappings(source.tree)[0];
+        const existing = new Set<string>(mapping ? mapping.pairs.map((pair: YPair) => pair.key) : []);
+        const items: vscode.CompletionItem[] = [];
+        for (const key of chartValueKeys(context, path)) {
+            if (existing.has(key.key)) continue;
+            const item = new vscode.CompletionItem(key.key, vscode.CompletionItemKind.Property);
+            item.detail = key.preview ? `chart default: ${key.preview.slice(0, 100)}` : `chart value (${context.chart})`;
+            item.documentation = new vscode.MarkdownString(`Key defined by \`${context.chart}\`'s values.yaml.`);
+            item.insertText = new vscode.SnippetString(key.key + ': ');
+            items.push(item);
         }
         return new vscode.CompletionList(items, false);
     }

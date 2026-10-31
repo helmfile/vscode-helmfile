@@ -9,6 +9,11 @@ import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
 import { templateBlocks, unclosedActions } from '../src/inspection';
+import { unknownFieldDiagnostics, missingFileDiagnostics, repositoryDiagnostics, outdatedVersions } from '../src/inspection';
+import { envVarSuggestions } from '../src/envVars';
+import { chartValueKeys, chartValuePaths, chartValuesContextFor } from '../src/chartValues';
+import { repositoryService } from '../src/repositoryService';
+import { contextualCompletions } from '../src/contextualCompletion';
 import { fillMaskedTemplateKeys } from '../src/templateScanner';
 import { allFunctions, findFunction } from '../src/functionCatalog';
 import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
@@ -992,6 +997,99 @@ entries:
 
 function httpQuery0(_index: unknown): Parameters<typeof import('../src/completion').chartVersions>[1] {
     return { access: { name: 'fluent-bit', url: 'https://charts.example.com', oci: false }, chart: '' } as any;
+}
+
+// ---------------------------------------------------------------- env var completion (#3)
+{
+    process.env['HELMFILE_TEST_ENVVAR'] = 'unit-test-value';
+    const suggestions = envVarSuggestions();
+    const hit = suggestions.find(s => s.name === 'HELMFILE_TEST_ENVVAR');
+    check('process env suggested for {{ env }}', hit != null && hit.value === 'unit-test-value' && hit.source === 'environment', JSON.stringify(hit));
+    delete process.env['HELMFILE_TEST_ENVVAR'];
+}
+
+// ------------------------------------------------------- unknown field diagnostics (#9)
+{
+    const text = ['releases:', '  - name: app', '    chart: foo/bar', '    insatlled: true', '    installed: true'].join('\n');
+    const source = { uri: vscode.Uri.file('/tmp/helmfile-unknown.yaml'), text, tree: parseTree(text) };
+    const diagnostics: vscode.Diagnostic[] = [];
+    unknownFieldDiagnostics(source, diagnostics);
+    const unknown = diagnostics.find(d => d.message.includes("'insatlled'"));
+    check('unknown release field flagged', unknown != null && unknown.message.includes('releases'), diagnostics.map(d => d.message).join('; '));
+    check('known fields pass', !diagnostics.some(d => d.message.includes("'installed'")), diagnostics.map(d => d.message).join('; '));
+    check('root keys unchecked', !diagnostics.some(d => d.message.includes("'releases'")), diagnostics.map(d => d.message).join('; '));
+}
+
+// ------------------------------------------------------- missing values file (#4)
+{
+    const dir = fs.mkdtempSync('helmfile-missing-');
+    try {
+        fs.writeFileSync(path.join(dir, 'values.yaml'), 'a: 1\n');
+        const text = ['values:', '  - values.yaml', '  - values/nope.yaml', '  - "values/{{ .Environment.Name }}.yaml"', '  - values/*.yaml'].join('\n');
+        const source = { uri: vscode.Uri.file(path.join(dir, 'helmfile.yaml')), text, tree: parseTree(text) };
+        const diagnostics: vscode.Diagnostic[] = [];
+        missingFileDiagnostics(source, 'default', diagnostics);
+        const missing = diagnostics.find(d => d.message.includes('nope.yaml'));
+        check('missing values file flagged', missing != null && missing.message.includes('Values file does not exist'), diagnostics.map(d => d.message).join('; '));
+        check('existing file passes', !diagnostics.some(d => d.message.includes('values.yaml:')), diagnostics.map(d => d.message).join('; '));
+        check('templated and glob paths skipped', diagnostics.length === 1, diagnostics.map(d => d.message).join('; '));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------------- outdated version hint (#2)
+{
+    const dir = fs.mkdtempSync('helmfile-outdated-');
+    try {
+        const url = `https://charts-${Date.now()}.example.com`;
+        const text = ['repositories:', '  - name: r', `    url: ${url}`, 'releases:', '  - name: app', '    chart: r/foo', '    version: 1.2.3'].join('\n');
+        const statePath = path.join(dir, 'helmfile.yaml');
+        fs.writeFileSync(statePath, text);
+        const source = { uri: vscode.Uri.file(statePath), text, tree: parseTree(text) };
+        repositoryService().remember({ access: { name: 'r', url, oci: false, username: '' }, chart: '' }, ChartIndex.parse('apiVersion: v1\nentries:\n  foo:\n    - version: 1.4.0\n    - version: 1.2.3\n'));
+        const diagnostics: vscode.Diagnostic[] = [];
+        repositoryDiagnostics(source, 'default', diagnostics);
+        const outdated = diagnostics.find(d => d.code === 'helmfile.updateVersion');
+        check('outdated version hinted', outdated != null && outdated.message.includes('1.4.0'), diagnostics.map(d => d.message).join('; '));
+        check('quick fix target recorded', outdated != null && outdatedVersions.get(outdated) === '1.4.0', String(outdated && outdatedVersions.get(outdated)));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+// ------------------------------------------------------- chart-aware values (#1)
+{
+    const dir = fs.mkdtempSync('helmfile-chartvalues-');
+    try {
+        fs.mkdirSync(path.join(dir, 'charts/mychart'), { recursive: true });
+        fs.mkdirSync(path.join(dir, 'values'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'charts/mychart/values.yaml'), 'image:\n  repository: nginx\n  tag: "1.0"\nreplicas: 2\n');
+        fs.writeFileSync(path.join(dir, 'values/app.yaml.gotmpl'), 'image:\n  repository: myrepo\n');
+        const text = ['releases:', '  - name: app', '    chart: ./charts/mychart', '    values:', '      - values/app.yaml.gotmpl', '    set:', '      - name: ', '        value: x'].join('\n');
+        const statePath = path.join(dir, 'helmfile.yaml');
+        fs.writeFileSync(statePath, text);
+
+        const valuesUri = vscode.Uri.file(path.join(dir, 'values/app.yaml.gotmpl'));
+        const context = chartValuesContextFor(valuesUri, 'default');
+        check('values file resolves to its chart', context != null && context.chart === './charts/mychart' && context.tree != null, JSON.stringify(context && { chart: context.chart, hasTree: context.tree != null }));
+        if (context) {
+            const rootKeys = chartValueKeys(context, []);
+            check('chart root keys offered', rootKeys.some(k => k.key === 'image' && k.preview === 'mapping') && rootKeys.some(k => k.key === 'replicas' && k.preview === '2'), JSON.stringify(rootKeys));
+            const nested = chartValueKeys(context, ['image']);
+            check('nested chart keys offered', nested.some(k => k.key === 'repository' && k.preview === 'nginx') && nested.some(k => k.key === 'tag' && k.preview === '1.0'), JSON.stringify(nested));
+            const flatPaths = chartValuePaths(context);
+            check('dotted set paths flattened', flatPaths.some(k => k.key === 'image.tag' && k.preview === '1.0') && flatPaths.some(k => k.key === 'replicas'), JSON.stringify(flatPaths.map(k => k.key)));
+        }
+
+        // `set:` name completion pulls the same chart defaults.
+        const source = { uri: vscode.Uri.file(statePath), text, tree: parseTree(text) };
+        const setOffset = text.indexOf('- name: ', text.indexOf('set:')) + '- name: '.length;
+        const setList = contextualCompletions(source, setOffset, 'default');
+        check('set name completes chart key paths', setList != null && setList.items.some(i => i.label === 'image.repository'), JSON.stringify(setList && setList.items.map(i => i.label)));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

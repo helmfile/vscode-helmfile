@@ -315,6 +315,14 @@ async function pickEnvironment(env: EnvironmentService, uri: vscode.Uri): Promis
 }
 
 
+/** Cache location of a chart's values.yaml for read-only lookups (never downloads). */
+export function chartValuesFile(request: { chart: string; version: string; repository: { url: string } | null }): string | null {
+    if (!request.chart || request.chart.includes('{{')) return null;
+    const directory = path.join(chartCacheRoot(), hash(`${request.chart}@${request.version}@${request.repository?.url ?? ''}`), chartName(request.chart));
+    const values = path.join(directory, 'values.yaml');
+    return fs.existsSync(values) ? values : null;
+}
+
 function chartName(chart: string): string {
     const slash = chart.lastIndexOf('/');
     return slash >= 0 ? chart.slice(slash + 1) : chart;
