@@ -3,7 +3,12 @@
 src/**
 node_modules/**
 examples/**
+test/**
+out/**
+!out/extension.js
 out/**/*.map
+.test-user-data/**
+.vscode-test/**
 esbuild.js
 tsconfig.json
 **/*.ts
