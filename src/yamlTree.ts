@@ -259,7 +259,6 @@ export function pairKeyAt(tree: YTree, offset: number): YPair | null {
 
 export function mappingGet(mapping: YNode | null, key: string): YPair | null {
     if (!mapping || mapping.kind !== 'mapping') return null;
-    if (!mapping) return null;
     for (const pair of mapping.pairs) if (pair.key === key) return pair;
     return null;
 }

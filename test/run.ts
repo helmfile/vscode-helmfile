@@ -5,6 +5,7 @@
  */
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
 import { templateBlocks, unclosedActions } from '../src/inspection';
@@ -831,6 +832,53 @@ entries:
         bumpContentVersion();
         const after = valuesModel(uri, 'dev');
         check('model reflects disk edit after bump', after?.definitions.get('replicas')?.preview === '2');
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
+}
+
+/* ---------------- review hardening regressions ---------------- */
+
+// restore() must survive unreadable chart-cache entries without throwing.
+{
+    const { ChartSourceService } = require('../src/chartNavigation') as typeof import('../src/chartNavigation');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chart-cache-'));
+    const previous = process.env['HELMFILE_CHART_CACHE'];
+    process.env['HELMFILE_CHART_CACHE'] = root;
+    try {
+        // A plain file where a hash directory is expected: readdir fails with ENOTDIR.
+        fs.writeFileSync(path.join(root, 'not-a-dir'), 'junk');
+        // A valid cached chart.
+        const dir = path.join(root, 'abc123', 'nginx');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, '.helmfile-vscode-chart'), 'ingress-nginx/ingress-nginx@4.11.0');
+        const service = new ChartSourceService();
+        service.restore();
+        const children = service.getChildren();
+        check('chart cache restore skips broken entries', children.length === 1 && children[0].label === 'ingress-nginx/ingress-nginx@4.11.0');
+        service.dispose();
+    } finally {
+        if (previous === undefined) delete process.env['HELMFILE_CHART_CACHE'];
+        else process.env['HELMFILE_CHART_CACHE'] = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+// An unreadable helmfile.d/ must not break project detection.
+{
+    const { detectProject } = require('../src/project') as typeof import('../src/project');
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'helmfile-unreadable-'));
+    try {
+        const dir = path.join(temp, 'helmfile.d');
+        fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(dir, 'apps.yaml'), 'releases: []\n');
+        fs.chmodSync(dir, 0o000);
+        try {
+            const project = detectProject(temp);
+            check('unreadable helmfile.d yields empty entries', project?.kind === 'directory' && project.entries.length === 0);
+        } finally {
+            fs.chmodSync(dir, 0o755);
+        }
     } finally {
         fs.rmSync(temp, { recursive: true, force: true });
     }

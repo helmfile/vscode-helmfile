@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
 import { offsetRange } from './position';
 import { nodeAt, pairKeyAt, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
-import { allDefinitions, isHelmfileName, readSource, resolveValueFiles, valuesKeyPath, type SourceFile, type ValuesDefinition } from './values';
+import { allDefinitions, contentStamp, isHelmfileName, readSource, resolveValueFiles, valuesKeyPath, type SourceFile, type ValuesDefinition } from './values';
 import { EnvironmentService } from './settings';
 import { alias, isChartField, isDeclaration as isRepositoryDeclaration, repositoryModel } from './repositories';
 import { isDeclaration as isTemplateDeclaration, isInheritance, parents, templateDeclarations, inheritanceScalars } from './templates';
@@ -271,7 +271,7 @@ function definitionLocation(definition: ValuesDefinition): vscode.Location {
 async function repositoryUsages(name: string): Promise<vscode.Location[]> {
     const locations: vscode.Location[] = [];
     for (const file of await stateFiles()) {
-        const source = openOrRead(file);
+        const source = readSource(file);
         if (!source) continue;
         for (const entry of chartPairs(source)) {
             const chartText = scalarPathText(entry.pair.value);
@@ -288,7 +288,7 @@ async function repositoryUsages(name: string): Promise<vscode.Location[]> {
 async function templateUsages(uri: vscode.Uri, name: string, environment: string): Promise<vscode.Location[]> {
     const locations: vscode.Location[] = [];
     for (const file of await stateFiles()) {
-        const source = openOrRead(file);
+        const source = readSource(file);
         if (!source) continue;
         for (const item of inheritanceScalars(source)) {
             if (item.name !== name) continue;
@@ -307,7 +307,7 @@ async function valueUsages(definition: ValuesDefinition, dottedSuffix: string, i
         '$.Values.' + dottedSuffix,
     ]);
     for (const file of await stateFiles()) {
-        const source = openOrRead(file);
+        const source = readSource(file);
         if (!source) continue;
         const text = source.text;
         for (const needle of needles) {
@@ -327,19 +327,20 @@ async function valueUsages(definition: ValuesDefinition, dottedSuffix: string, i
     return locations;
 }
 
-/** Helmfile state files in the workspace plus the active document. */
+let stateFilesCache: { stamp: number; files: vscode.Uri[] } | null = null;
+
+/** Helmfile state files in the workspace plus the active document, cached per content stamp. */
 async function stateFiles(): Promise<vscode.Uri[]> {
+    const stamp = contentStamp();
+    if (stateFilesCache && stateFilesCache.stamp === stamp) return stateFilesCache.files;
     const files = await vscode.workspace.findFiles('**/*.{yaml,yml,gotmpl,tpl}', '**/node_modules/**');
     const result = files.filter(file => isHelmfileName(file.path.split('/').pop() ?? ''));
     const active = vscode.window.activeTextEditor?.document.uri;
     if (active && isHelmfileName(active.path.split('/').pop() ?? '') && !result.some(file => file.toString() === active.toString())) {
         result.push(active);
     }
+    stateFilesCache = { stamp, files: result };
     return result;
-}
-
-function openOrRead(uri: vscode.Uri): SourceFile | null {
-    return readSource(uri);
 }
 
 /** All `chart:` scalar pairs in the state file (releases, dependencies, templates). */

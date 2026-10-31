@@ -92,7 +92,6 @@ export class RepositoryService implements vscode.Disposable {
         }
         if (work.length === 0) return;
         this.notifyChanged();
-        const progressToken = new vscode.CancellationTokenSource();
         try {
             await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Window, title, cancellable: true },
@@ -107,7 +106,6 @@ export class RepositoryService implements vscode.Disposable {
             );
         } finally {
             for (const query of work) this.pending.delete(queryKey(query));
-            progressToken.dispose();
             this.notifyChanged();
         }
         if (!notify) return;
@@ -186,6 +184,11 @@ export class RepositoryService implements vscode.Disposable {
     }
 }
 
+/**
+ * Cache identity. The password is intentionally omitted: it never changes the
+ * fetched bytes (index/tags are identical for the same credentials realm) and
+ * keeping it out of the key avoids leaking it into error/cache diagnostics.
+ */
 function queryKey(query: RepositoryQuery): string {
     return JSON.stringify([query.access.name, query.access.url, query.access.oci, query.access.username, query.chart]);
 }

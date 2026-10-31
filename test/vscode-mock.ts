@@ -78,6 +78,21 @@ class Disposable {
     constructor(readonly cb: () => void = () => {}) {}
     dispose(): void { this.cb(); }
 }
+class TreeItemCollapsibleState {
+    static readonly None = 0;
+    static readonly Collapsed = 1;
+    static readonly Expanded = 2;
+}
+class TreeItem {
+    constructor(
+        public label: string,
+        public collapsibleState?: number,
+    ) {}
+    description?: string;
+    resourceUri?: Uri;
+    contextValue?: string;
+    iconPath?: unknown;
+}
 class ThemeIcon {
     constructor(readonly id: string) {}
 }
@@ -166,6 +181,8 @@ export = {
     SymbolKind: { File: 1, Module: 2, Class: 4, Enum: 10, Package: 8 },
     StatusBarAlignment: { Left: 1, Right: 2 },
     ThemeIcon,
+    TreeItem,
+    TreeItemCollapsibleState,
     SemanticTokensLegend,
     SemanticTokensBuilder,
     DocumentSymbol,

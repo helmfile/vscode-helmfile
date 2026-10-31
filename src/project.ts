@@ -77,7 +77,13 @@ export function detectProject(dir: string): HelmfileProject | null {
     }
 
     if (dirExists) {
-        const entries = fs.readdirSync(helmfileD)
+        let names: string[];
+        try {
+            names = fs.readdirSync(helmfileD);
+        } catch {
+            names = []; // unreadable helmfile.d/: entry resolution stays empty
+        }
+        const entries = names
             .filter(name => isStateFileName(name))
             .sort()
             .map(name => path.join(helmfileD, name));

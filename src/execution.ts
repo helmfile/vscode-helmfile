@@ -113,7 +113,7 @@ export function runHelmfile(built: BuiltCommand, token?: vscode.CancellationToke
             if (stdout.length < OUTPUT_LIMIT) stdout += chunk.toString('utf8');
         };
         const onStderr = (chunk: Buffer): void => {
-            stderr += chunk.toString('utf8');
+            if (stderr.length < OUTPUT_LIMIT) stderr += chunk.toString('utf8');
             channel().append(chunk.toString('utf8'));
         };
         child.stdout.on('data', onStdout);
@@ -142,12 +142,15 @@ export function channel(): vscode.OutputChannel {
 /** Confirm a protected environment run; false aborts. */
 export async function confirmProtected(command: HelmfileCommandSpec, regex: string): Promise<boolean> {
     const scope = command.release ? `release '${command.release}'${command.namespace ? ` in namespace '${command.namespace}'` : ''}` : 'all releases';
+    // 'Cancel' first: the modal's default (Enter) action must be the safe one,
+    // matching the IntelliJ plugin's Cancel-by-default confirmation.
     const choice = await vscode.window.showWarningMessage(
         `Environment '${command.environment}' is protected by '${regex}'.`,
         {
             modal: true,
             detail: `Action: ${command.operation}\nScope: ${scope}\nState file: ${path.basename(command.file)}\n\nRun this action?`,
         },
+        'Cancel',
         'Run',
     );
     return choice === 'Run';

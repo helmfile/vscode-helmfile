@@ -5,6 +5,7 @@
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import * as vscode from 'vscode';
@@ -150,14 +151,29 @@ export class ChartSourceService implements vscode.Disposable {
     restore(): void {
         const root = chartCacheRoot();
         if (!fs.existsSync(root)) return;
-        for (const hashDir of fs.readdirSync(root)) {
+        let hashDirs: string[];
+        try {
+            hashDirs = fs.readdirSync(root);
+        } catch {
+            return; // unreadable cache root: nothing to restore
+        }
+        for (const hashDir of hashDirs) {
             const chartRoot = path.join(root, hashDir);
-            for (const chartDir of fs.readdirSync(chartRoot)) {
+            let chartDirs: string[];
+            try {
+                chartDirs = fs.readdirSync(chartRoot);
+            } catch {
+                continue; // unreadable entry: skip, keep restoring the rest
+            }
+            for (const chartDir of chartDirs) {
                 const marker = path.join(chartRoot, chartDir, '.helmfile-vscode-chart');
-                if (fs.existsSync(marker)) {
+                try {
+                    if (!fs.existsSync(marker)) continue;
                     let display = fs.readFileSync(marker, 'utf8').trim();
                     if (!display) display = chartDir;
                     this.downloaded.set(display, vscode.Uri.file(path.join(chartRoot, chartDir)));
+                } catch {
+                    continue;
                 }
             }
         }
@@ -303,6 +319,6 @@ function hash(input: string): string {
 }
 
 function chartCacheRoot(): string {
-    const home = process.env['HELMFILE_CHART_CACHE'] ?? path.join(process.env['HOME'] ?? process.cwd(), '.cache', 'vscode-helmfile', 'chart-sources');
+    const home = process.env['HELMFILE_CHART_CACHE'] ?? path.join(os.homedir(), '.cache', 'vscode-helmfile', 'chart-sources');
     return home;
 }
