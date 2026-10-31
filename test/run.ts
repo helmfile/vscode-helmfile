@@ -14,7 +14,7 @@ import { allFunctions, findFunction } from '../src/functionCatalog';
 import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
 import { repositoryModel, query, alias } from '../src/repositories';
 import { ChartIndex, compareVersions } from '../src/chartIndex';
-import { parseTemplateOutput, parseDiffOutput, diffPartial } from '../src/outputs';
+import { parseTemplateOutput, parseDiffOutput, diffPartial, OutputViewer, disposeOutputProvider } from '../src/outputs';
 import { commandProblem, buildCommand, protectionProblem, isProtectedEnvironment, selectorOf } from '../src/execution';
 import { valuePathAt } from '../src/references';
 import { schemaContext } from '../src/schema';
@@ -265,6 +265,28 @@ entries:
     check('unparsed progress captured', diff.unparsed.includes('helmfile: some progress line'), JSON.stringify(diff.unparsed));
     check('partial via unparsed', diffPartial(diff) === true);
     check('clean diff not partial', diffPartial(parseDiffOutput('ns, app, Deployment (apps) has changed:\n+  x: 1\n')) === false);
+
+    // Shared content provider (H1 regression): both viewers must serve their
+    // documents through the single scheme-wide provider, and a new run of a
+    // kind must evict only that kind's previous documents (M2).
+    const templateViewer = new OutputViewer('template');
+    const diffViewer = new OutputViewer('diff');
+    const provider = (vscode as unknown as { _contentProviders: Map<string, { provideTextDocumentContent: (uri: { path: string }) => string }> })._contentProviders.get('helmfile-output');
+    check('provider registered', provider != null);
+    const doc = (label: string): string => provider.provideTextDocumentContent({ path: '/' + encodeURIComponent(label) });
+    const manifest = ['apiVersion: v1', 'kind: ConfigMap', 'metadata:', '  name: m'].join('\n') + '\n';
+    void templateViewer.showTemplate(parseTemplateOutput(manifest), 'default');
+    void diffViewer.showDiff(parseDiffOutput('ns, app, Deployment (apps) has changed:\n+  x: 1\n'), 'release app', 'default');
+    check('template doc served', doc('template:All manifests.yaml') === manifest, JSON.stringify(doc('template:All manifests.yaml')));
+    check('diff doc served', doc('diff:all-before').includes('Deployment'), JSON.stringify(doc('diff:all-before')));
+    const manifest2 = manifest.replace('name: m', 'name: m2');
+    void templateViewer.showTemplate(parseTemplateOutput(manifest2), 'default');
+    check('template rerun evicts old doc', doc('template:All manifests.yaml') === manifest2, JSON.stringify(doc('template:All manifests.yaml')));
+    check('diff docs survive template rerun', doc('diff:all-before').includes('Deployment'), 'diff kind untouched');
+    templateViewer.dispose();
+    check('diff doc survives template viewer dispose', doc('diff:all-before').includes('Deployment'), 'dispose is per-kind');
+    disposeOutputProvider();
+    check('provider disposed clears docs', doc('diff:all-before') === '', 'shared store cleared');
 }
 
 // ---------------------------------------------------------------- execution

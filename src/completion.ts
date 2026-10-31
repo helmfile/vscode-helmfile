@@ -154,7 +154,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                     item.detail = 'version';
                     item.documentation = new vscode.MarkdownString(latest?.description || name);
                     item.insertText = aliasPart + '/' + name;
-                    if (versions.some(version => version.deprecated) && versions.every(version => version.deprecated)) {
+                    if (versions.every(version => version.deprecated)) {
                         item.tags = [vscode.CompletionItemTag.Deprecated];
                     }
                     items.push(item);

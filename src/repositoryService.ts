@@ -11,6 +11,7 @@ import { loadRepository } from './repositoryDownload';
 import { Access, downloadable } from './repositories';
 import { clean, preview, reason } from './downloadDiagnostics';
 import { repositoryDownloadsEnabled } from './settings';
+import { channel } from './execution';
 
 export interface RepositoryQuery {
     readonly access: Access;
@@ -43,7 +44,6 @@ export class RepositoryService implements vscode.Disposable {
     private readonly queued = new Map<string, RepositoryQuery>();
     private refreshTimer: ReturnType<typeof setTimeout> | null = null;
     private changedTimer: ReturnType<typeof setTimeout> | null = null;
-    private readonly output = vscode.window.createOutputChannel('Helmfile', { log: true });
     private readonly onChangedEmitter = new vscode.EventEmitter<void>();
     /** Fires when snapshots change so diagnostics and completions refresh. */
     readonly onChanged = this.onChangedEmitter.event;
@@ -149,8 +149,8 @@ export class RepositoryService implements vscode.Disposable {
             .showWarningMessage(title, { modal: false, detail: summary }, 'Show Details')
             .then(choice => {
                 if (choice === 'Show Details') {
-                    this.output.appendLine(details);
-                    this.output.show();
+                    channel().appendLine(details);
+                    channel().show();
                 }
             });
     }
@@ -179,7 +179,6 @@ export class RepositoryService implements vscode.Disposable {
     dispose(): void {
         if (this.refreshTimer) clearTimeout(this.refreshTimer);
         if (this.changedTimer) clearTimeout(this.changedTimer);
-        this.output.dispose();
         this.onChangedEmitter.dispose();
     }
 }

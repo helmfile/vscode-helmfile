@@ -14,6 +14,7 @@ import {
     channel,
     commandProblem,
     confirmProtected,
+    disposeChannel,
     isProtectedEnvironment,
     protectionProblem,
     runHelmfile,
@@ -21,7 +22,7 @@ import {
     type HelmfileCommandSpec,
     type HelmfileOperationKind,
 } from './execution';
-import { OutputViewer, parseDiffOutput, parseTemplateOutput, diffPartial } from './outputs';
+import { OutputViewer, disposeOutputProvider, parseDiffOutput, parseTemplateOutput, diffPartial } from './outputs';
 import { declarationAt, literal } from './releaseTarget';
 
 const OPERATION_LABELS: Record<HelmfileOperationKind, string> = {
@@ -236,4 +237,6 @@ function releaseTargetAt(uri: vscode.Uri | undefined, offset: number | undefined
 export function disposeOperations(): void {
     templateViewer.dispose();
     diffViewer.dispose();
+    disposeOutputProvider();
+    disposeChannel();
 }

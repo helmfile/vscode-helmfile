@@ -155,6 +155,10 @@ const outputChannel = () => ({
     clear: () => {}, show: () => {}, hide: () => {}, dispose: () => {},
 });
 
+/** Content providers registered per scheme, last one wins (real VSCode semantics). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const contentProviders = new Map<string, any>();
+
 export = {
     Uri,
     Position,
@@ -192,6 +196,8 @@ export = {
     CodeActionKind,
     WorkspaceEdit,
     env: {},
+    /** Test hook: content providers registered per scheme. */
+    _contentProviders: contentProviders,
     window: {
         activeTextEditor: undefined,
         createOutputChannel: outputChannel,
@@ -218,7 +224,14 @@ export = {
         }),
         fs: {},
         getWorkspaceFolder: () => undefined,
-        registerTextDocumentContentProvider: () => ({ dispose: () => {} }),
+        registerTextDocumentContentProvider: (scheme: string, provider: unknown) => {
+            contentProviders.set(scheme, provider);
+            return {
+                dispose: () => {
+                    if (contentProviders.get(scheme) === provider) contentProviders.delete(scheme);
+                },
+            };
+        },
         onDidChangeTextDocument: () => ({ dispose: () => {} }),
         onDidOpenTextDocument: () => ({ dispose: () => {} }),
         onDidSaveTextDocument: () => ({ dispose: () => {} }),

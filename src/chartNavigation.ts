@@ -34,6 +34,9 @@ const NO_ACCESS: Access = {
 /** Simple state-value references inside version/chart strings: `{{ .Values.x }}` plus default/quote pipelines. */
 const STATE_VALUE = /\{\{-?\s*(\$?\.(?:Values|StateValues|Environment\.Values)\.[A-Za-z0-9_.]+|\.Environment\.Name)((?:\s*\|\s*(?:default|quote)\s+(?:"[^"]*"|'[^']*'))*)\s*-?\}\}/;
 
+/** Pinpoint version references (reused indefinitely); anything else is a range/unpinned. */
+const EXACT_VERSION = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
 interface ChartRequest {
     /** Resolved chart reference, e.g. `ingress-nginx/ingress-nginx` or a local path. */
     readonly chart: string;
@@ -87,8 +90,14 @@ export class ChartSourceService implements vscode.Disposable {
         const marker = path.join(directory, '.helmfile-vscode-chart');
 
         if (fs.existsSync(marker)) {
-            this.remember(directory, display);
-            return;
+            // Pinned versions never change; ranges and unpinned charts are
+            // re-resolved after five minutes, mirroring the IntelliJ plugin.
+            const pinned = EXACT_VERSION.test(request.version);
+            const fresh = Date.now() - fs.statSync(marker).mtimeMs < 5 * 60_000;
+            if (pinned || fresh) {
+                this.remember(directory, display);
+                return;
+            }
         }
         fs.mkdirSync(path.dirname(directory), { recursive: true });
 
