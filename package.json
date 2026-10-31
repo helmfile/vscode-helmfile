@@ -4,7 +4,7 @@
     "description": "Helmfile state file editing: completion, navigation, repository awareness, environments, and Template/Diff/Apply/Destroy",
     "version": "0.1.0",
     "publisher": "helmfile-dev",
-    "license": "Apache-2.0",
+    "license": "MIT",
     "repository": {
         "type": "git",
         "url": "https://github.com/helmfile/vscode-helmfile"
@@ -27,9 +27,12 @@
     "main": "./out/extension.js",
     "activationEvents": [
         "workspaceContains:helmfile.yaml",
+        "workspaceContains:helmfile.yml",
         "workspaceContains:helmfile.yaml.gotmpl",
         "workspaceContains:helmfile.d/*.yaml",
-        "workspaceContains:helmfile.d/*.yml"
+        "workspaceContains:helmfile.d/*.yml",
+        "workspaceContains:helmfile.d/*.yaml.gotmpl",
+        "workspaceContains:helmfile.d/*.yml.gotmpl"
     ],
     "contributes": {
         "languages": [

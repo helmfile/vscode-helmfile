@@ -139,6 +139,12 @@ export function channel(): vscode.OutputChannel {
     return outputChannel;
 }
 
+/** Release the shared output channel (extension shutdown). */
+export function disposeChannel(): void {
+    outputChannel?.dispose();
+    outputChannel = undefined;
+}
+
 /** Confirm a protected environment run; false aborts. */
 export async function confirmProtected(command: HelmfileCommandSpec, regex: string): Promise<boolean> {
     const scope = command.release ? `release '${command.release}'${command.namespace ? ` in namespace '${command.namespace}'` : ''}` : 'all releases';

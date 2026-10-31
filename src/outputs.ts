@@ -66,7 +66,12 @@ function fieldOf(node: unknown, key: string): unknown {
             if (pair.key instanceof Scalar && String(pair.key.value ?? '') === key) return pair.value;
         }
     } else if (node instanceof YAMLSeq) {
-        return node.items.find(item => item instanceof YAMLMap && fieldOf(item, key) != null) ?? null;
+        for (const item of node.items) {
+            if (item instanceof YAMLMap) {
+                const found = fieldOf(item, key);
+                if (found != null) return found;
+            }
+        }
     }
     return null;
 }
@@ -229,16 +234,37 @@ export function diffPartial(result: DiffParseResult): boolean {
 const SCHEME = 'helmfile-output';
 
 /**
+ * One content provider serves BOTH viewers: VSCode routes a scheme to the
+ * most recently registered provider, so per-instance providers would shadow
+ * each other and one viewer's virtual documents would render empty.
+ */
+const sharedDocuments = new Map<string, string>();
+let sharedProvider: vscode.Disposable | undefined;
+
+function ensureProvider(): void {
+    sharedProvider ??= vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
+        provideTextDocumentContent: uri => sharedDocuments.get(decodeURIComponent(uri.path.slice(1))) ?? '',
+    });
+}
+
+/** Dispose the shared provider and drop every stored document. */
+export function disposeOutputProvider(): void {
+    sharedProvider?.dispose();
+    sharedProvider = undefined;
+    sharedDocuments.clear();
+}
+
+/**
  * Virtual document store: keeps rendered texts addressable by URI so quick
  * picks and diff views can reopen them. Mirrors the IntelliJ read-only viewers.
+ * Only the latest run per kind is retained — a single template/diff output can
+ * reach the 32 MiB capture bound, so old documents are dropped.
  */
 export class OutputViewer implements vscode.Disposable {
-    private readonly documents = new Map<string, string>();
-    private readonly provider: vscode.Disposable;
     private readonly baseName: string;
 
     constructor(private readonly kind: 'template' | 'diff') {
-        this.provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, { provideTextDocumentContent: uri => this.documents.get(decodeURIComponent(uri.path.slice(1))) ?? '' });
+        ensureProvider();
         this.baseName = kind === 'template' ? 'All manifests.yaml' : 'All changes.yaml';
     }
 
@@ -247,8 +273,15 @@ export class OutputViewer implements vscode.Disposable {
     }
 
     private remember(label: string, content: string): vscode.Uri {
-        this.documents.set(label, content);
+        sharedDocuments.set(label, content);
         return this.uriOf(label);
+    }
+
+    /** Drop the previous run's documents of this kind. */
+    private forgetPreviousRun(): void {
+        for (const key of sharedDocuments.keys()) {
+            if (key.startsWith(this.kind + ':')) sharedDocuments.delete(key);
+        }
     }
 
     /** Show the template output: pick "All manifests" or an individual resource. */
@@ -256,6 +289,7 @@ export class OutputViewer implements vscode.Disposable {
         if (result.unrecognized) {
             void vscode.window.showWarningMessage('Helmfile: helmfile template completed, but the output could not be parsed into resources; showing the raw output.');
         }
+        this.forgetPreviousRun();
         const all = this.remember(`${this.kind}:${this.baseName}`, result.all);
         const picks: vscode.QuickPickItem[] = [
             { label: this.baseName, description: 'complete output' },
@@ -270,6 +304,7 @@ export class OutputViewer implements vscode.Disposable {
     /** Show the diff output: "All changes" plus one virtual diff per resource (HelmfileDiffViewer). */
     async showDiff(result: DiffParseResult, scope: string, environment: string, review?: { command: string; run: () => Promise<void> }): Promise<void> {
         const title = `Helmfile diff: ${scope} [${environment}]`;
+        this.forgetPreviousRun();
         const before = new StringBuilder();
         const after = new StringBuilder();
         for (const resource of result.resources) {
@@ -302,6 +337,16 @@ export class OutputViewer implements vscode.Disposable {
                 labelPath: path,
             });
         }
+        // The review prompt is independent of the picker: even dismissing the
+        // quick pick must leave the apply continuation available (the IntelliJ
+        // viewer keeps the button next to the diff).
+        if (review) {
+            void vscode.window
+                .showInformationMessage(`Helmfile: reviewed the diff for ${scope} (${environment})?`, review.command)
+                .then(choice => {
+                    if (choice === review.command) void review.run();
+                });
+        }
         const picked = await vscode.window.showQuickPick(picks, { placeHolder: title });
         if (!picked) return;
         if (picked.suppressed) {
@@ -314,17 +359,12 @@ export class OutputViewer implements vscode.Disposable {
             });
             void vscode.window.showInformationMessage(`Deployed${suffix} ↔ Desired${suffix}`);
         }
-        if (review) {
-            void vscode.window
-                .showInformationMessage(`Helmfile: reviewed the diff for ${scope} (${environment})?`, review.command)
-                .then(choice => {
-                    if (choice === review.command) void review.run();
-                });
-        }
     }
 
     dispose(): void {
-        this.provider.dispose();
+        // Drop only this kind's documents; the shared provider outlives the
+        // instance and serves the other viewer until both are disposed.
+        this.forgetPreviousRun();
     }
 }
 
