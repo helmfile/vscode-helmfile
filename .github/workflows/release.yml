@@ -28,24 +28,26 @@ jobs:
 
       - name: Verify tag matches package.json version
         run: |
-          pkg="v$(node -p "require('./package.json').version")"
+          pkg="$(node -p "require('./package.json').version")"
           tag="${{ github.event.release.tag_name }}"
-          if [ "$pkg" != "$tag" ]; then
+          normalized="${tag#v}"   # accept both 0.2.0 and v0.2.0
+          if [ "$pkg" != "$normalized" ]; then
             echo "::error::release tag '$tag' does not match package.json version '$pkg'"
             exit 1
           fi
+          echo "VERSION=$normalized" >> "$GITHUB_ENV"
 
       - name: vsce package
-        run: npx vsce package --no-dependencies -o "vscode-helmfile-${{ github.event.release.tag_name }}.vsix"
+        run: npx vsce package --no-dependencies -o "vscode-helmfile-${VERSION}.vsix"
 
       - name: Generate checksum
-        run: shasum -a 256 vscode-helmfile-*.vsix > vscode-helmfile-${{ github.event.release.tag_name }}.vsix.sha256
+        run: shasum -a 256 "vscode-helmfile-${VERSION}.vsix" > "vscode-helmfile-${VERSION}.vsix.sha256"
 
       - name: Attach artifacts to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            "vscode-helmfile-${{ github.event.release.tag_name }}.vsix" \
-            "vscode-helmfile-${{ github.event.release.tag_name }}.vsix.sha256" \
+            "vscode-helmfile-${VERSION}.vsix" \
+            "vscode-helmfile-${VERSION}.vsix.sha256" \
             --clobber
