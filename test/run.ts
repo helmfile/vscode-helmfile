@@ -815,5 +815,26 @@ entries:
     }
 }
 
+// ------------------------------------------------- disk edits invalidate caches
+{
+    const { valuesModel, bumpContentVersion } = require('../src/values') as typeof import('../src/values');
+    const temp = fs.mkdtempSync('helmfile-invalidate-');
+    try {
+        fs.writeFileSync(path.join(temp, 'helmfile.yaml'), 'environments:\n  dev:\n    values:\n      - base.yaml\n');
+        fs.writeFileSync(path.join(temp, 'base.yaml'), 'replicas: 1\n');
+        const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml'));
+        const before = valuesModel(uri, 'dev');
+        check('model reads initial disk value', before?.definitions.get('replicas')?.preview === '1');
+        // External edit (not open in an editor): the watcher bumps the
+        // content version; the next model reads the new content.
+        fs.writeFileSync(path.join(temp, 'base.yaml'), 'replicas: 2\n');
+        bumpContentVersion();
+        const after = valuesModel(uri, 'dev');
+        check('model reflects disk edit after bump', after?.definitions.get('replicas')?.preview === '2');
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);
