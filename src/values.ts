@@ -51,7 +51,14 @@ interface FileEntry {
     readonly tree: YTree;
 }
 
-const openDocuments = new Map<string, { version: number; text: string }>();
+/** Walk-up limit when searching parent directories for a state file. */
+const MAX_WALK_DEPTH = 64;
+/** Recursion limit for `bases:` chains. */
+const MAX_BASE_DEPTH = 40;
+/** Upper bound on directories visited by a glob expansion. */
+const GLOB_VISIT_BUDGET = 5000;
+
+const openDocuments = new Map<string, { version: number; text: string; tree: YTree }>();
 const fileCache = new Map<string, FileEntry>();
 const modelCache = new Map<string, ValuesModel>();
 const allCache = new Map<string, ValuesDefinition[]>();
@@ -71,7 +78,10 @@ export function bumpContentVersion(): void {
 export function setOpenDocument(uri: vscode.Uri, version: number, text: string, changed: boolean): void {
     const key = uri.toString();
     const previous = openDocuments.get(key);
-    openDocuments.set(key, { version, text });
+    // Re-parse only when the text actually changed; undo/redo back to the
+    // same content reuses the tree.
+    const tree = !previous || previous.text !== text ? parseTree(text) : previous.tree;
+    openDocuments.set(key, { version, text, tree });
     if (changed || !previous || previous.text !== text) bumpContentVersion();
 }
 
@@ -81,7 +91,7 @@ export function closeOpenDocument(uri: vscode.Uri): void {
 
 export function readSource(uri: vscode.Uri): SourceFile | null {
     const open = openDocuments.get(uri.toString());
-    if (open) return { uri, text: open.text, tree: parseTree(open.text) };
+    if (open) return { uri, text: open.text, tree: open.tree };
     try {
         const stat = fs.statSync(uri.fsPath);
         if (!stat.isFile()) return null;
@@ -108,7 +118,7 @@ export function stateFor(uri: vscode.Uri): SourceFile | null {
     if (!self) return null;
     if (STATE_NAMES.includes(path.basename(uri.fsPath)) || hasStateRoot(self.tree)) return self;
     let dir = path.dirname(uri.fsPath);
-    for (let depth = 0; depth < 64; depth++) {
+    for (let depth = 0; depth < MAX_WALK_DEPTH; depth++) {
         const parent = path.dirname(dir);
         if (parent === dir) break;
         for (const name of STATE_NAMES) {
@@ -248,7 +258,7 @@ function collectGlob(directory: string, prefix: string, matcher: (relative: stri
         return;
     }
     for (const entry of entries) {
-        if (++budget.count > 5000) return;
+        if (++budget.count > GLOB_VISIT_BUDGET) return;
         const relative = prefix + entry.name;
         if (entry.isDirectory()) {
             let real: fs.Stats | null = null;
@@ -405,7 +415,7 @@ class Builder {
     }
 
     private state(source: SourceFile | null, environmentPass: boolean, depth: number): void {
-        if (!source || depth > 40) return;
+        if (!source || depth > MAX_BASE_DEPTH) return;
         const id = source.uri.toString();
         if (this.visiting.has(id)) return;
         this.visiting.add(id);

@@ -18,10 +18,11 @@ import { HelmfileStatusBar } from './statusBar';
 import { ChartSourceService } from './chartNavigation';
 import { repositoryService, type RepositoryQuery } from './repositoryService';
 import { repositoryModel, downloadable, query as repositoryQuery } from './repositories';
-import { runReleaseOperation, selectEnvironment } from './operations';
+import { disposeOperations, runReleaseOperation, selectEnvironment } from './operations';
 import { detectProject, projectFor } from './project';
 import { channel } from './execution';
 import { scalarPathText, walkAll, type YPair } from './yamlTree';
+import { offsetPosition } from './position';
 
 const HELMFILE_SELECTOR = { language: 'helmfile' };
 
@@ -57,7 +58,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     }
 
-    context.subscriptions.push(env, charts);
+    context.subscriptions.push(env, charts, { dispose: disposeOperations });
 
     // Language providers.
     context.subscriptions.push(
@@ -106,7 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
             diagnostics.refreshAll();
         }, 150);
     };
-    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{yaml,yml,gotmpl,tpl}');
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{yaml,yml,gotmpl,tpl,json}');
     context.subscriptions.push(
         watcher,
         watcher.onDidChange(invalidateDiskFiles),
@@ -240,15 +241,5 @@ function collectQueries(uri: vscode.Uri, environment: string): RepositoryQuery[]
 }
 
 function positionOf(uri: vscode.Uri, offset: number): vscode.Position {
-    const source = readSource(uri);
-    const text = source?.text ?? '';
-    let line = 0;
-    let lastNewline = -1;
-    for (let i = 0; i < offset && i < text.length; i++) {
-        if (text[i] === '\n') {
-            line++;
-            lastNewline = i;
-        }
-    }
-    return new vscode.Position(line, offset - lastNewline - 1);
+    return offsetPosition(readSource(uri)?.text ?? '', offset);
 }

@@ -38,19 +38,11 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
         if (action) {
             const body = text.slice(action.bodyStart, action.bodyEnd);
             const bodyOffset = offset - action.bodyStart;
-            let overFunction = false;
-            for (const match of matchAll(IDENTIFIER, body)) {
-                if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
-                if (findFunction(match[0])) overFunction = true;
-                break;
-            }
-            if (overFunction) {
-                const match = matchAll(IDENTIFIER, body).find(candidate => bodyOffset >= (candidate.index ?? 0) && bodyOffset <= (candidate.index ?? 0) + candidate[0].length);
-                const func = match && findFunction(match[0]);
-                if (func) {
-                    const range = offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + match[0].length);
-                    return new vscode.Hover(functionMarkdown(func), range);
-                }
+            const word = identifierAt(body, bodyOffset);
+            const func = word ? findFunction(word.text) : null;
+            if (func && word) {
+                const range = offsetRange(text, action.bodyStart + word.start, action.bodyStart + word.start + word.text.length);
+                return new vscode.Hover(functionMarkdown(func), range);
             }
 
             // 3. Statically computed value of the surrounding expression.
@@ -112,6 +104,15 @@ function definitionMarkdown(definition: ValuesDefinition): vscode.MarkdownString
     else content.appendMarkdown(`_${definition.valueKind}_`);
     content.appendMarkdown(`\n\nFrom \`${label}\``);
     return content;
+}
+
+/** Identifier containing `offset` within the action body, if any. */
+function identifierAt(body: string, offset: number): { text: string; start: number } | null {
+    for (const match of matchAll(IDENTIFIER, body)) {
+        const start = match.index ?? 0;
+        if (offset >= start && offset <= start + match[0].length) return { text: match[0], start };
+    }
+    return null;
 }
 
 function matchAll(pattern: RegExp, text: string): RegExpMatchArray[] {
