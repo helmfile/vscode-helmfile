@@ -85,6 +85,12 @@ interface DialogInputs {
     readonly namespace: string;
 }
 
+/** Empty release means "whole state"; only diff may run without a release (HelmfileReleaseDialog only clears the name for diff). */
+export function releaseInputProblem(operation: HelmfileOperationKind, value: string): string | null {
+    if (operation !== 'diff' && value.trim() === '') return 'Release name is required for this action';
+    return null;
+}
+
 /** Port of HelmfileReleaseDialog: environment → release → namespace → preview. */
 async function collectInputs(env: EnvironmentService, uri: vscode.Uri, operation: HelmfileOperationKind, suggestedRelease: string): Promise<DialogInputs | null> {
     const names = environmentNames(uri, env.get(uri));
@@ -98,6 +104,7 @@ async function collectInputs(env: EnvironmentService, uri: vscode.Uri, operation
         placeHolder: 'release name',
         ignoreFocusOut: true,
         title: 'For templated release names enter the rendered name',
+        validateInput: value => releaseInputProblem(operation, value),
     });
     if (release === undefined) return null;
 

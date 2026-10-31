@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import * as vscode from 'vscode';
 import { mappingGet, pairKeyAt, scalarPathText } from './yamlTree';
-import { readSource, stateFor, type SourceFile } from './values';
+import { stateFor, environmentNames, type SourceFile } from './values';
 import { allDefinitions } from './values';
 import { EnvironmentService, settings } from './settings';
 import { query as repositoryQuery } from './repositories';
@@ -153,7 +153,13 @@ export class ChartSourceService implements vscode.Disposable {
         this.downloaded.set(display, vscode.Uri.file(directory));
         this.emitter.fire(undefined);
         void vscode.commands.executeCommand('setContext', 'helmfile.hasCharts', true);
-        void vscode.window.showTextDocument(vscode.Uri.file(path.join(directory, 'Chart.yaml')));
+        void vscode.window
+            .showTextDocument(vscode.Uri.file(path.join(directory, 'Chart.yaml')))
+            .then(undefined, () => this.chartOpenFailed(directory));
+    }
+
+    private chartOpenFailed(directory: string): void {
+        void vscode.window.showWarningMessage('Helmfile', `The downloaded chart at ${directory} has no Chart.yaml.`);
     }
 
     /** Restore previously downloaded charts from the cache directory. */
@@ -287,7 +293,11 @@ async function openLocal(source: SourceFile, chart: string): Promise<void> {
     const candidate = path.join(path.dirname(source.uri.fsPath), chart);
     const chartYaml = path.join(candidate, 'Chart.yaml');
     if (fs.existsSync(chartYaml)) {
-        await vscode.window.showTextDocument(vscode.Uri.file(chartYaml));
+        try {
+            await vscode.window.showTextDocument(vscode.Uri.file(chartYaml));
+        } catch {
+            void vscode.window.showWarningMessage('Helmfile', `Cannot open ${chartYaml}.`);
+        }
         return;
     }
     void vscode.window.showWarningMessage('Helmfile', `The chart at ${chart} has no Chart.yaml.`);
@@ -295,28 +305,15 @@ async function openLocal(source: SourceFile, chart: string): Promise<void> {
 
 async function pickEnvironment(env: EnvironmentService, uri: vscode.Uri): Promise<string | undefined> {
     const state = stateFor(uri);
-    const model = state ? environmentList(state.uri) : [];
-    const picked = await vscode.window.showQuickPick(model.length ? model : ['default'], { placeHolder: 'Select the Helmfile environment used to resolve template values' });
+    // environmentNames includes template-inferred environments (dynamic
+    // `range`-generated keys), not just literal ones.
+    const names = state ? environmentNames(state.uri, env.get(state.uri)) : ['default'];
+    const picked = await vscode.window.showQuickPick(names.length ? names : ['default'], { placeHolder: 'Select the Helmfile environment used to resolve template values' });
     if (picked === undefined) return undefined;
     env.set(picked);
     return picked;
 }
 
-function environmentList(uri: vscode.Uri): string[] {
-    const source = readSource(uri);
-    if (!source) return ['default'];
-    const names = new Set<string>(['default']);
-    for (const doc of source.tree.docs) {
-        const root = doc.root;
-        if (!root) continue;
-        const environments = mappingGet(root, 'environments');
-        const envMapping = environments?.value;
-        if (envMapping && envMapping.kind === 'mapping') {
-            for (const pair of envMapping.pairs) if (pair.key) names.add(pair.key);
-        }
-    }
-    return [...names];
-}
 
 function chartName(chart: string): string {
     const slash = chart.lastIndexOf('/');

@@ -240,10 +240,13 @@ const SCHEME = 'helmfile-output';
  */
 const sharedDocuments = new Map<string, string>();
 let sharedProvider: vscode.Disposable | undefined;
+const sharedChanged = new vscode.EventEmitter<vscode.Uri>();
 
 function ensureProvider(): void {
     sharedProvider ??= vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         provideTextDocumentContent: uri => sharedDocuments.get(decodeURIComponent(uri.path.slice(1))) ?? '',
+        // Tabs left open from an earlier run refresh instead of showing stale text.
+        onDidChange: sharedChanged.event,
     });
 }
 
@@ -252,6 +255,7 @@ export function disposeOutputProvider(): void {
     sharedProvider?.dispose();
     sharedProvider = undefined;
     sharedDocuments.clear();
+    sharedChanged.dispose();
 }
 
 /**
@@ -274,14 +278,23 @@ export class OutputViewer implements vscode.Disposable {
 
     private remember(label: string, content: string): vscode.Uri {
         sharedDocuments.set(label, content);
-        return this.uriOf(label);
+        const uri = this.uriOf(label);
+        sharedChanged.fire(uri);
+        return uri;
     }
 
     /** Drop the previous run's documents of this kind. */
     private forgetPreviousRun(): void {
+        const dropped: vscode.Uri[] = [];
         for (const key of sharedDocuments.keys()) {
-            if (key.startsWith(this.kind + ':')) sharedDocuments.delete(key);
+            if (key.startsWith(this.kind + ':')) {
+                sharedDocuments.delete(key);
+                dropped.push(this.uriOf(key));
+            }
         }
+        // Tabs still open on dropped documents re-render (empty) instead of
+        // keeping the previous run's text.
+        for (const uri of dropped) sharedChanged.fire(uri);
     }
 
     /** Show the template output: pick "All manifests" or an individual resource. */

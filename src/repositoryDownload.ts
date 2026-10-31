@@ -9,6 +9,7 @@ import * as https from 'node:https';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
+import * as zlib from 'node:zlib';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Access } from './repositories';
@@ -204,12 +205,34 @@ async function once(
                     chunks.push(chunk);
                 });
                 response.on('end', () => {
+                    let payload: Buffer = Buffer.concat(chunks);
+                    const encoding = (headerLine(response, 'content-encoding') ?? '').trim().toLowerCase();
+                    if (encoding === 'gzip' || encoding === 'x-gzip') {
+                        try {
+                            payload = zlib.gunzipSync(payload);
+                        } catch (error) {
+                            reject(new Error(`Malformed gzip response: ${reasonOf(error)}`));
+                            return;
+                        }
+                    } else if (encoding === 'deflate') {
+                        try {
+                            payload = zlib.inflateSync(payload);
+                        } catch {
+                            // Some servers send raw deflate without the zlib wrapper.
+                            try {
+                                payload = zlib.inflateRawSync(payload);
+                            } catch (error) {
+                                reject(new Error(`Malformed deflate response: ${reasonOf(error)}`));
+                                return;
+                            }
+                        }
+                    }
                     resolve({
                         status: response.statusCode ?? 0,
                         challenge: headerLine(response, 'www-authenticate'),
                         // The Link header doubles as the redirect location holder.
                         next: headerLine(response, 'link') ?? headerLine(response, 'location'),
-                        body: Buffer.concat(chunks).toString('utf8'),
+                        body: payload.toString('utf8'),
                     });
                 });
                 response.on('error', reject);
@@ -233,6 +256,10 @@ function headerLine(response: http.IncomingMessage, name: string): string | null
     if (typeof value === 'string') return value;
     if (Array.isArray(value) && value.length > 0) return value[0];
     return null;
+}
+
+function reasonOf(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 function portOf(uri: URL): number {
@@ -267,13 +294,23 @@ async function requestOptions(access: Access): Promise<https.RequestOptions> {
 
 /* ---------------- proxy support (http.proxy / http.proxySupport) ---------------- */
 
-let proxyAgent: Promise<(protocol: string) => http.Agent | undefined> | null = null;
+let proxyAgent: { key: string; resolver: Promise<(protocol: string) => http.Agent | undefined> } | null = null;
 
 async function agentFor(uri: URL, options: https.RequestOptions): Promise<http.Agent | undefined> {
     const tlsUsed = uri.protocol === 'https:' && (options.rejectUnauthorized === false || !!options.ca || !!options.cert);
     if (tlsUsed) return undefined; // custom TLS needs a direct socket; skip proxy
-    const resolver = (proxyAgent ??= loadProxyAgent());
-    const select = await resolver;
+    const config = vscode.workspace.getConfiguration('http');
+    const configured = config.get<string>('proxy') ?? '';
+    // VSCode falls back to the environment when http.proxy is unset (http.proxySupport).
+    const fromEnv = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.ALL_PROXY ?? process.env.all_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy ?? '';
+    const proxy = configured || fromEnv;
+    const key = `${proxy}|${config.get<boolean>('proxyStrictSSL', true)}`;
+    if (!proxyAgent || proxyAgent.key !== key) {
+        // Cache keyed by effective settings so runtime changes to http.proxy
+        // or http.proxyStrictSSL take effect instead of pinning the first agent.
+        proxyAgent = { key, resolver: loadProxyAgent() };
+    }
+    const select = await proxyAgent.resolver;
     return select(uri.protocol);
 }
 

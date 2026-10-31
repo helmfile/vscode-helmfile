@@ -59,10 +59,18 @@ export interface RepositoryQuery {
 const VALUE = /\{\{-?\s*(\$?\.(?:Values|StateValues|Environment\.Values)\.[A-Za-z0-9_.]+|\.Environment\.Name)\s*-?}}/g;
 
 const modelCache = new Map<string, RepositoryModel>();
+let modelCacheStamp = -1;
 
 export function repositoryModel(uri: vscode.Uri, environment: string): RepositoryModel {
+    const stamp = contentStamp();
+    if (stamp !== modelCacheStamp) {
+        // Content changed: earlier generations would otherwise stay referenced
+        // forever (every keystroke produces a new stamp key).
+        modelCache.clear();
+        modelCacheStamp = stamp;
+    }
     const source = readSource(uri);
-    const cacheKey = `${source?.uri.toString() ?? uri.toString()}|${environment}|${contentStamp()}`;
+    const cacheKey = `${source?.uri.toString() ?? uri.toString()}|${environment}|${stamp}`;
     const cached = modelCache.get(cacheKey);
     if (cached) return cached;
     const builder = new Builder(environment);

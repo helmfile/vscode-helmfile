@@ -85,10 +85,13 @@ export class RepositoryService implements vscode.Disposable {
                 (downloadable(query.access) || (query.access.oci && query.chart !== ''))
             );
         });
+        const added: string[] = [];
         for (const query of work) {
             this.queued.delete(queryKey(query));
-            if (this.pending.has(queryKey(query))) continue;
-            this.pending.add(queryKey(query));
+            const key = queryKey(query);
+            if (this.pending.has(key)) continue;
+            this.pending.add(key);
+            added.push(key);
         }
         if (work.length === 0) return;
         this.notifyChanged();
@@ -105,7 +108,9 @@ export class RepositoryService implements vscode.Disposable {
                 },
             );
         } finally {
-            for (const query of work) this.pending.delete(queryKey(query));
+            // Only release the marks this run acquired: a key that was already
+            // pending belongs to an in-flight background load and must survive.
+            for (const key of added) this.pending.delete(key);
             this.notifyChanged();
         }
         if (!notify) return;

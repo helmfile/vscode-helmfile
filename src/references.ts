@@ -314,7 +314,12 @@ async function valueUsages(definition: ValuesDefinition, dottedSuffix: string, i
             let index = text.indexOf(needle);
             while (index >= 0) {
                 const after = index + needle.length;
-                const boundary = after >= text.length ? true : !/[A-Za-z0-9_.]/.test(text[after]);
+                // Boundary on both ends: `my.Values.x` is not a reference to
+                // `.Values.x`, and `$.Values.x` must not match twice (the
+                // leading `$` fails the before-boundary for the bare needle).
+                const boundary =
+                    (after >= text.length ? true : !/[A-Za-z0-9_.]/.test(text[after])) &&
+                    (index === 0 ? true : !/[A-Za-z0-9_$]/.test(text[index - 1]));
                 if (boundary) locations.push(new vscode.Location(file, offsetRange(text, index, after)));
                 index = text.indexOf(needle, index + 1);
             }

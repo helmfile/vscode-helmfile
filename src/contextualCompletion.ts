@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { ancestors, mappingGet, nodeAt, parseTree, rootMappings, scalarPathText, type YMapping, type YPair } from './yamlTree';
 import { templateDeclarations } from './templates';
-import type { SourceFile } from './values';
+import { childKeys, valuesModel, type SourceFile } from './values';
 
 /** Where the caret is: the field key it belongs to and its YAML context. */
 export interface FieldContext {
@@ -24,6 +24,8 @@ export interface FieldContext {
     /** Ancestors of the pair the value belongs to (e.g. ['releases']). */
     readonly path: readonly string[];
     readonly typed: string;
+    /** The pair's value is a sequence containing the caret (list entry form). */
+    readonly sequenceValue: boolean;
 }
 
 /**
@@ -37,7 +39,12 @@ export function fieldContextAt(source: SourceFile, offset: number): FieldContext
     while (current) {
         if (current.kind === 'pair') {
             const pair = current as YPair;
-            return { key: pair.key, path: ancestors(pair), typed: typedBefore(source.text, offset, pair) };
+            return {
+                key: pair.key,
+                path: ancestors(pair),
+                typed: typedBefore(source.text, offset, pair),
+                sequenceValue: pair.value != null && pair.value.kind === 'sequence' && offset > pair.value.start,
+            };
         }
         current = current.parent;
     }
@@ -198,8 +205,18 @@ export function contextualCompletions(source: SourceFile, offset: number, enviro
         case 'condition': {
             if (!within('releases', 'templates')) return null;
             const items = releaseNames(source).map(name => item(`${name}.enabled`, vscode.CompletionItemKind.Reference, 'enabled flag of a release'));
+            const seen = new Set<string>();
             for (const key of topLevelValueKeys(source, environment)) {
+                seen.add(key);
                 items.push(item(`.Values.${key}.enabled`, vscode.CompletionItemKind.Reference, 'values flag'));
+            }
+            // Keys merged from values files of the selected environment (the
+            // common real-world shape — env `values:` entries are file lists).
+            const model = valuesModel(source.uri, environment);
+            for (const definition of model ? childKeys(model, '') : []) {
+                if (seen.has(definition.path)) continue;
+                seen.add(definition.path);
+                items.push(item(`.Values.${definition.path}.enabled`, vscode.CompletionItemKind.Reference, 'values flag'));
             }
             return new vscode.CompletionList(items, false);
         }
@@ -209,8 +226,11 @@ export function contextualCompletions(source: SourceFile, offset: number, enviro
         }
         case 'values':
         case 'secrets': {
-            // List form only: inline root `values:` mappings are key/value, not files.
-            if (!within('releases', 'templates', 'environments')) return null;
+            // List entries only: release/template/environment lists and the
+            // root `values:`/`secrets:` file lists (mirrors HelmfileReferences:
+            // ancestors of size 1 in {values, bases, helmfiles}). Inline root
+            // mappings are key/value, not files — schema keys cover those.
+            if (!within('releases', 'templates', 'environments') && !(atRoot && field.sequenceValue)) return null;
             return fileCompletions(source, typed, YAML_EXTENSIONS, 'values file', false);
         }
         case 'bases': {
@@ -246,8 +266,12 @@ function fileCompletions(source: SourceFile, typed: string, extensions: readonly
     for (const suggestion of stateRelativeFiles(source.uri.fsPath, extensions, typed)) {
         const insert = suggestion.directory ? suggestion.relative + '/' : suggestion.relative;
         if (seen.has(insert)) continue;
-        // Filter by the last path segment the user already typed.
-        if (typed && !insert.startsWith(typed)) continue;
+        // Filter by the typed prefix: either the whole path or its last
+        // segment (typing `common` still finds `values/common.yaml`).
+        if (typed) {
+            const lastSegment = insert.slice(insert.lastIndexOf('/') + 1);
+            if (!insert.startsWith(typed) && !lastSegment.startsWith(typed)) continue;
+        }
         seen.add(insert);
         items.push(item(insert, suggestion.directory ? vscode.CompletionItemKind.Folder : vscode.CompletionItemKind.File, suggestion.directory ? 'directory' : label));
     }
