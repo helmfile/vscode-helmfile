@@ -74,8 +74,22 @@ with feature parity.
 
 - Code lens on each `environments:` entry switches the active environment
   (check mark on the current one); also **Helmfile: Select Environment**.
-  Selection is persisted per workspace and drives completion, navigation
-  and chart version resolution.
+  Selection is persisted **per helmfile project** and drives completion,
+  navigation and chart version resolution.
+
+### Project detection
+
+- Helmfile projects are recognized the way the `helmfile` CLI resolves
+  them: `helmfile.yaml` → `helmfile.yaml.gotmpl` → `helmfile.d/*.{yaml,yml,
+yaml.gotmpl,yml.gotmpl}` (sorted). Layouts the CLI would refuse to run
+  (both `helmfile.yaml` and `helmfile.yaml.gotmpl`, or a default file next
+  to `helmfile.d/`) are flagged with a warning.
+- The extension activates automatically in workspaces containing a helmfile
+  entry, even before any state file is opened.
+- Run commands invoked outside a state file fall back to the governing
+  project's entry (edit a values file, run **Helmfile: Template Release…**
+  and it targets the state that would consume it).
+- The status bar tooltip names the active project's entry state(s).
 
 ### Run
 

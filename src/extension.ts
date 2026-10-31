@@ -19,6 +19,7 @@ import { ChartSourceService } from './chartNavigation';
 import { repositoryService, type RepositoryQuery } from './repositoryService';
 import { repositoryModel, downloadable, query as repositoryQuery } from './repositories';
 import { runReleaseOperation, selectEnvironment } from './operations';
+import { detectProject, projectFor } from './project';
 import { channel } from './execution';
 import { scalarPathText, walkAll, type YPair } from './yamlTree';
 
@@ -38,6 +39,23 @@ export function activate(context: vscode.ExtensionContext): void {
     const lenses = new HelmfileCodeLensProvider(env);
     const charts = new ChartSourceService();
     charts.restore();
+
+    // Project recognition: surface helmfile's own entry conflicts (yaml+
+    // gotmpl both present, or default file next to helmfile.d/) once per root.
+    const warned = new Set<string>();
+    const warnConflict = (uri?: vscode.Uri): void => {
+        const project = uri ? projectFor(uri.fsPath) : null;
+        if (!project?.conflict || warned.has(project.root)) return;
+        warned.add(project.root);
+        void vscode.window.showWarningMessage(`Helmfile: ${project.conflict}`);
+    };
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        const project = detectProject(folder.uri.fsPath);
+        if (project?.conflict) {
+            warned.add(project.root);
+            void vscode.window.showWarningMessage(`Helmfile: ${project.conflict}`);
+        }
+    }
 
     context.subscriptions.push(env, charts);
 
@@ -66,6 +84,7 @@ export function activate(context: vscode.ExtensionContext): void {
     };
     context.subscriptions.push(
         vscode.workspace.onDidOpenTextDocument(track),
+        vscode.workspace.onDidOpenTextDocument(document => warnConflict(document.uri)),
         vscode.workspace.onDidChangeTextDocument(event => track(event.document)),
         vscode.workspace.onDidCloseTextDocument(document => {
             closeOpenDocument(document.uri);

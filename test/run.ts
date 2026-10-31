@@ -448,5 +448,65 @@ entries:
     check('genuine YAML errors still reported', parseTree(broken).errors.length > 0, 'expected error');
 }
 
+// ------------------------------------------------------------ project entry
+{
+    const { detectProject, projectFor, isStateFileName, projectScope } = require('../src/project') as typeof import('../src/project');
+    const tempRoot = fs.mkdtempSync('helmfile-proj-');
+    try {
+        eq(detectProject(tempRoot), null, 'empty dir: no project');
+
+        const single = path.join(tempRoot, 'single');
+        fs.mkdirSync(single);
+        fs.writeFileSync(path.join(single, 'helmfile.yaml'), 'releases: []\n');
+        const p1 = detectProject(single)!;
+        check('helmfile.yaml entry', p1.entries.length === 1 && p1.entries[0].endsWith('helmfile.yaml') && p1.kind === 'file' && p1.conflict === null, JSON.stringify(p1));
+
+        const gotmpl = path.join(tempRoot, 'gotmpl');
+        fs.mkdirSync(gotmpl);
+        fs.writeFileSync(path.join(gotmpl, 'helmfile.yaml.gotmpl'), 'releases: []\n');
+        const p2 = detectProject(gotmpl)!;
+        check('helmfile.yaml.gotmpl fallback entry', p2.entries.length === 1 && p2.entries[0].endsWith('helmfile.yaml.gotmpl'), JSON.stringify(p2));
+
+        const both = path.join(tempRoot, 'both');
+        fs.mkdirSync(both);
+        fs.writeFileSync(path.join(both, 'helmfile.yaml'), 'releases: []\n');
+        fs.writeFileSync(path.join(both, 'helmfile.yaml.gotmpl'), 'releases: []\n');
+        const p3 = detectProject(both)!;
+        check('yaml + gotmpl conflict', p3.conflict != null && p3.conflict.includes('refuses'), p3.conflict);
+
+        const dirBased = path.join(tempRoot, 'dirbased');
+        fs.mkdirSync(path.join(dirBased, 'helmfile.d'), { recursive: true });
+        fs.writeFileSync(path.join(dirBased, 'helmfile.d', '20-apps.yaml'), 'releases: []\n');
+        fs.writeFileSync(path.join(dirBased, 'helmfile.d', '10-infra.yml'), 'releases: []\n');
+        fs.writeFileSync(path.join(dirBased, 'helmfile.d', '30-misc.yaml.gotmpl'), 'releases: []\n');
+        fs.writeFileSync(path.join(dirBased, 'helmfile.d', 'README.md'), 'not a state\n');
+        const p4 = detectProject(dirBased)!;
+        check(
+            'helmfile.d sorted entries',
+            p4.kind === 'directory' && p4.entries.map(e => path.basename(e)).join(',') === '10-infra.yml,20-apps.yaml,30-misc.yaml.gotmpl',
+            JSON.stringify(p4.entries.map(e => path.basename(e))),
+        );
+
+        const dirConflict = path.join(tempRoot, 'dirconflict');
+        fs.mkdirSync(path.join(dirConflict, 'helmfile.d'), { recursive: true });
+        fs.writeFileSync(path.join(dirConflict, 'helmfile.yaml'), 'releases: []\n');
+        const p5 = detectProject(dirConflict)!;
+        check('helmfile.d + default file conflict', p5.conflict != null && p5.conflict.includes('helmfile.d'), p5.conflict);
+
+        // Nested file resolves up to the nearest project root.
+        const nested = path.join(dirBased, 'helmfile.d', '20-apps.yaml');
+        const up = projectFor(nested)!;
+        check('projectFor walks up', up.root === dirBased && up.kind === 'directory', JSON.stringify(up));
+        eq(projectFor(path.join(tempRoot, 'single', 'helmfile.yaml'))?.root, single, 'projectFor exact dir');
+        eq(projectFor(path.join(tempRoot, 'elsewhere', 'x.yaml'), tempRoot), null, 'projectFor stops at boundary');
+        eq(projectScope(path.join(dirBased, 'helmfile.d', '20-apps.yaml')), dirBased, 'projectScope = project root');
+        eq(projectScope(path.join(tempRoot, 'orphan', 'a.yaml')), path.join(tempRoot, 'orphan'), 'projectScope falls back to file dir');
+
+        check('state file names', isStateFileName('a.yaml') && isStateFileName('b.yml') && isStateFileName('c.yaml.gotmpl') && isStateFileName('d.yml.gotmpl') && !isStateFileName('README.md') && !isStateFileName('x.yaml.gotmpl2'), 'isStateFileName');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);

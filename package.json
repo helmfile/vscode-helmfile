@@ -25,6 +25,12 @@
     "yaml"
   ],
   "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:helmfile.yaml",
+    "workspaceContains:helmfile.yaml.gotmpl",
+    "workspaceContains:helmfile.d/*.yaml",
+    "workspaceContains:helmfile.d/*.yml"
+  ],
   "contributes": {
     "languages": [
       {
