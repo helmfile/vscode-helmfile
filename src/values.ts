@@ -132,15 +132,25 @@ function hasStateRoot(tree: YTree): boolean {
 
 /* ---------------- values model ---------------- */
 
+const modelBuilding = new Set<string>();
+
 export function valuesModel(uri: vscode.Uri, environment: string): ValuesModel | null {
     const source = readSource(uri);
     if (!source) return null;
     const cacheKey = `${source.uri.toString()}|${environment}|${contentVersion}`;
     const cached = modelCache.get(cacheKey);
     if (cached) return cached;
-    const model = new Builder(source, environment).build();
-    modelCache.set(cacheKey, model);
-    return model;
+    // Environment inference may consult the model of the very state being
+    // built (`.Values` conditions); re-entry yields null instead of looping.
+    if (modelBuilding.has(cacheKey)) return null;
+    modelBuilding.add(cacheKey);
+    try {
+        const model = new Builder(source, environment).build();
+        modelCache.set(cacheKey, model);
+        return model;
+    } finally {
+        modelBuilding.delete(cacheKey);
+    }
 }
 
 /** Reverse lookup following every discovered environment. */
@@ -396,7 +406,7 @@ class Builder {
                 }
                 // Template-generated environments survive no structured parse of
                 // the raw document; infer them from the source text directly.
-                for (const inferred of inferEnvironments(source)) this.environments.add(inferred.name);
+                for (const inferred of inferEnvironments(source, this.environment)) this.environments.add(inferred.name);
                 if (!environmentPass) this.entries(source, valueOf(root, 'values'), null);
             }
         } finally {

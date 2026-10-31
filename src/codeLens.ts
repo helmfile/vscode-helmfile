@@ -63,7 +63,7 @@ export class HelmfileCodeLensProvider implements vscode.CodeLensProvider {
             // Template-generated environments: no literal keys survive the raw
             // parse, so show the statically inferred names on `environments:`.
             if (environments && literalEnvs === 0) {
-                const inferred = inferEnvironments(source);
+                const inferred = inferEnvironments(source, this.env.get());
                 if (inferred.length) {
                     const active = this.env.get();
                     const names = inferred.map(env => (env.name === active ? `✓ ${env.name}` : env.name));

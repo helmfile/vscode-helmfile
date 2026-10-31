@@ -610,5 +610,78 @@ entries:
     }
 }
 
+// ------------------------------------------------- conditional literal environments
+{
+    const { inferEnvironments } = require('../src/environmentInference') as typeof import('../src/environmentInference');
+    const conditional = [
+        'environments:',
+        '  default:',
+        '    values:',
+        '      - "defaults.yaml"',
+        '{{- if .Values | get "install.mysql_innodbcluster_d7y" false }}',
+        '  mysql-innodbcluster:',
+        '    values: []',
+        '{{- end }}',
+        '',
+        'releases: []',
+    ].join('\n');
+
+    const write = (dir: string, flagValue: string | null) => {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'helmfile.yaml.gotmpl'), conditional);
+        fs.writeFileSync(
+            path.join(dir, 'defaults.yaml'),
+            flagValue === null ? 'other: 1\n' : `install:\n  mysql_innodbcluster_d7y: ${flagValue}\n`,
+        );
+    };
+
+    // Flag true: the guarded literal entry is offered.
+    {
+        const temp = fs.mkdtempSync('helmfile-cond-');
+        try {
+            write(temp, 'true');
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const result = inferEnvironments({ uri, text: conditional, tree: parseTree(conditional) }, 'default');
+            check(
+                'conditional entry offered when flag true',
+                result.some(e => e.name === 'mysql-innodbcluster') && result.some(e => e.name === 'default'),
+                JSON.stringify(result),
+            );
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+
+    // Flag absent, default false: the guarded entry is suppressed.
+    {
+        const temp = fs.mkdtempSync('helmfile-cond-');
+        try {
+            write(temp, null);
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const result = inferEnvironments({ uri, text: conditional, tree: parseTree(conditional) }, 'default');
+            check(
+                'conditional entry suppressed when default false',
+                !result.some(e => e.name === 'mysql-innodbcluster') && result.some(e => e.name === 'default'),
+                JSON.stringify(result),
+            );
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+
+    // Unresolvable condition (no environment passed): offered, best-effort.
+    {
+        const temp = fs.mkdtempSync('helmfile-cond-');
+        try {
+            write(temp, null);
+            const uri = vscode.Uri.file(path.join(temp, 'helmfile.yaml.gotmpl'));
+            const result = inferEnvironments({ uri, text: conditional, tree: parseTree(conditional) });
+            check('unresolvable condition offered best-effort', result.some(e => e.name === 'mysql-innodbcluster'), JSON.stringify(result));
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);
