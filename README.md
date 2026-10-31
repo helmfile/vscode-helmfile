@@ -26,6 +26,14 @@ with feature parity.
   `.Environment.Values.` paths complete from the resolved values model
   (`values:` entries, `bases:` inheritance, environment overrides, glob
   paths, `{{ .Environment.Name }}` in paths).
+- **Context-aware completion**: the editor knows what each field means —
+  `needs:` offers the release names of this state, `inherit:` offers
+  template declarations, `condition:` offers `<release>.enabled` and
+  `.Values.<key>.enabled` flags, `kubeContext:` lists contexts from
+  `$KUBECONFIG` / `~/.kube/config`, `values:` / `secrets:` / `bases:` /
+  `helmfiles:` / `path:` offer files next to the state, `chart: ./…`
+  offers local chart directories. Field completion hides keys already
+  present in the mapping and ranks frequently-used fields first.
 
 ### Navigation
 
