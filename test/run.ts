@@ -117,6 +117,65 @@ function eq(actual: unknown, expected: unknown, name: string): void {
     eq(alias(STATE, 'fluent-bit/fluent-bit'), 'fluent-bit', 'alias(fluent-bit/...)');
 }
 
+// ------------------------------------------------------- contextual completion
+{
+    const { parseTree } = require('../src/yamlTree') as typeof import('../src/yamlTree');
+    const { fieldContextAt, releaseNames, contextualCompletions, kubeContexts, stateRelativeFiles } = require('../src/contextualCompletion') as typeof import('../src/contextualCompletion');
+    const ctxText = [
+        'releases:',
+        '  - name: grafana',
+        '    chart: grafana/grafana',
+        '    needs:',
+        '      - lo',
+        '    condition: ',
+        '    values:',
+        '      - va',
+        'templates:',
+        '  logging:',
+        '    chart: fluent-bit/fluent-bit',
+        'environments:',
+        '  production:',
+        '    values: []',
+    ].join('\n');
+    const ctxSource = { uri: vscode.Uri.file(path.join(path.dirname(STATE.fsPath), 'helmfile.yaml')), text: ctxText, tree: parseTree(ctxText) };
+
+    eq(releaseNames(ctxSource).join(','), 'grafana', 'releaseNames static');
+    const needsOffset = ctxText.indexOf('- lo') + '- l'.length;
+    const needsField = fieldContextAt(ctxSource, needsOffset);
+    check('fieldContextAt resolves needs item', needsField?.key === 'needs' && needsField.path.includes('releases'), JSON.stringify(needsField));
+    eq(needsField?.typed ?? '', 'l', 'needs typed text');
+    const needsList = contextualCompletions(ctxSource, needsOffset, 'production');
+    check('needs offers release names', needsList != null && needsList.items.some(i => i.label === 'grafana'), JSON.stringify(needsList?.items.map(i => i.label)));
+
+    const conditionOffset = ctxText.indexOf('condition: ') + 'condition: '.length;
+    const conditionList = contextualCompletions(ctxSource, conditionOffset, 'production');
+    check('condition offers release flags', conditionList != null && conditionList.items.some(i => i.label === 'grafana.enabled'), JSON.stringify(conditionList?.items.map(i => i.label)));
+
+    const valuesOffset = ctxText.indexOf('- va') + '- v'.length;
+    const valuesField = fieldContextAt(ctxSource, valuesOffset);
+    check('fieldContextAt resolves values item', valuesField?.key === 'values' && valuesField.path.includes('releases'), JSON.stringify(valuesField));
+    const valuesList = contextualCompletions(ctxSource, valuesOffset, 'production');
+    check('values offers files from disk', valuesList != null && valuesList.items.some(i => String(i.label).startsWith('values/')), JSON.stringify(valuesList?.items.slice(0, 3).map(i => i.label)));
+
+    const inheritOffset = ctxText.indexOf('  logging:') + 3;
+    const inheritSource = { ...ctxSource, text: ctxText.replace('    needs:\n      - lo', '    inherit:\n      - log'), tree: parseTree(ctxText.replace('    needs:\n      - lo', '    inherit:\n      - log')) };
+    // template declarations resolve through the values module: register the
+    // synthetic file as an open document, exactly like the real editor does.
+    const { setOpenDocument, closeOpenDocument } = require('../src/values') as typeof import('../src/values');
+    setOpenDocument(inheritSource.uri, 1, inheritSource.text);
+    const inheritList = contextualCompletions(inheritSource, inheritSource.text.indexOf('- log') + 2, 'production');
+    check('inherit offers template declarations', inheritList != null && inheritList.items.some(i => i.label === 'logging'), JSON.stringify(inheritList?.items.map(i => i.label)));
+    closeOpenDocument(inheritSource.uri);
+
+    const kubeFixture = path.join(fs.mkdtempSync('helmfile-kube-'), 'config');
+    fs.writeFileSync(kubeFixture, 'contexts:\n  - name: zeta\n  - name: alpha\n');
+    eq(kubeContexts([kubeFixture]).join(','), 'alpha,zeta', 'kubeContexts sorted');
+    fs.rmSync(path.dirname(kubeFixture), { recursive: true, force: true });
+
+    const files = stateRelativeFiles(STATE.fsPath, ['.yaml'], 'values/');
+    check('stateRelativeFiles lists values dir', files.some(f => f.relative === 'values/common.yaml'), JSON.stringify(files.map(f => f.relative)));
+}
+
 // ---------------------------------------------------------------- chart index
 {
     const index = ChartIndex.parse(`

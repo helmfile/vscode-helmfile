@@ -7,12 +7,13 @@
 import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
 import { allFunctions, functionMarkdown } from './functionCatalog';
-import { nodeAt, parseTree, type YPair, type YMapping } from './yamlTree';
+import { nodeAt, parseTree, rootMappings, type YPair, type YMapping } from './yamlTree';
 import { completionPath, schemaContext, schemaFields, type Field } from './schema';
 import { childKeys, SEPARATOR, valuesModel, type SourceFile, type ValuesDefinition } from './values';
 import { repositoryDownloadsEnabled } from './settings';
 import { chart, query, repositoryModel, type RepositoryQuery } from './repositories';
 import { repositoryService } from './repositoryService';
+import { contextualCompletions, localChartCompletions } from './contextualCompletion';
 
 /** Completion for values paths inside Go template actions, e.g. `.Values.image.` */
 const PATH_PREFIX = /(\$?\.(?:Values|StateValues|Environment\.Values)\.)([A-Za-z0-9_.]*)$/;
@@ -46,10 +47,15 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
             return this.actionCompletions(uri, text, offset);
         }
 
-        const repository = this.repositoryCompletions(uri, text, offset, prefix);
+        const tree = parseTree(text);
+        const source: SourceFile = { uri, text, tree };
+        const repository = this.repositoryCompletions(source, offset, prefix);
         if (repository) return repository;
 
-        return this.fieldCompletions(text, offset);
+        const contextual = contextualCompletions(source, offset, this.env());
+        if (contextual) return contextual;
+
+        return this.fieldCompletions(source, offset);
     }
 
     private actionCompletions(uri: vscode.Uri, text: string, offset: number): vscode.CompletionList {
@@ -92,25 +98,27 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         return new vscode.CompletionList(items, false);
     }
 
-    private repositoryCompletions(uri: vscode.Uri, text: string, offset: number, prefix: string): vscode.CompletionList | null {
+    private repositoryCompletions(source: SourceFile, offset: number, prefix: string): vscode.CompletionList | null {
         const match = /^([ \t]*(?:-\s*)?)(chart|version):[ \t]*(['"]?)([^'"\r\n]*)$/.exec(prefix);
         if (!match) return null;
         const field = match[2];
         const value = match[4];
         if (value.includes('{{') || value.includes(' #')) return null;
 
-        const path = completionPath(text, offset);
+        const path = completionPath(source.text, offset);
         const context = path ? schemaContext(path) : null;
         if (context !== 'releases' && context !== 'dependencies') return null;
 
         const env = this.env();
-        const tree = parseTree(text);
-        const pair = keyPairAt(tree, offset);
-        const mapping = pair && pair.value && pair.value.kind === 'mapping' ? pair.value : enclosingMapping(nodeAt(tree, offset));
-        if (!mapping) return new vscode.CompletionList([], false);
-        const source: SourceFile = { uri, text, tree };
 
-        if (field === 'chart') return this.chartCompletions(uri, env, value);
+        if (field === 'chart') {
+            if (value.startsWith('.')) return localChartCompletions(source, value);
+            return this.chartCompletions(source.uri, env, value);
+        }
+
+        const pair = keyPairAt(source.tree, offset);
+        const mapping = pair && pair.value && pair.value.kind === 'mapping' ? pair.value : enclosingMapping(nodeAt(source.tree, offset));
+        if (!mapping) return new vscode.CompletionList([], false);
         return this.versionCompletions(source, mapping, env);
     }
 
@@ -184,8 +192,8 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         return new vscode.CompletionList(items, false);
     }
 
-    private fieldCompletions(text: string, offset: number): vscode.CompletionList {
-        const path = completionPath(text, offset);
+    private fieldCompletions(source: SourceFile, offset: number): vscode.CompletionList {
+        const path = completionPath(source.text, offset);
         if (!path) return new vscode.CompletionList([], false);
         const context = schemaContext(path);
         const items: vscode.CompletionItem[] = [];
@@ -198,24 +206,44 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
                 item.detail = 'Helmfile block';
                 item.documentation = new vscode.MarkdownString('Insert the required fields; Tab moves between values.');
                 item.insertText = blockSnippet(context);
-                item.sortText = '0';
+                item.sortText = '00000';
                 items.push(item);
             }
         }
 
+        // Keys already present in the enclosing mapping are noise: hide them.
+        const mapping = enclosingMapping(nodeAt(source.tree, offset)) ?? rootMappings(source.tree)[0];
+        const existing = new Set<string>(mapping ? mapping.pairs.map((pair: YPair) => pair.key) : []);
+        const order = FIELD_ORDER[context] ?? [];
         for (const field of schemaFields(context)) {
-            items.push(fieldItem(field));
+            if (existing.has(field.name)) continue;
+            items.push(fieldItem(field, sortKey(order.indexOf(field.name), field.name)));
         }
         return new vscode.CompletionList(items, false);
     }
 }
 
-function fieldItem(field: Field): vscode.CompletionItem {
+function fieldItem(field: Field, sortText?: string): vscode.CompletionItem {
     const item = new vscode.CompletionItem(field.name, vscode.CompletionItemKind.Field);
     item.detail = field.type;
     item.documentation = new vscode.MarkdownString(field.description);
     item.insertText = new vscode.SnippetString(field.name + ': ');
+    if (sortText) item.sortText = sortText;
     return item;
+}
+
+/** Typical field order per context: most-used keys surface first. */
+const FIELD_ORDER: Record<string, readonly string[]> = {
+    releases: ['name', 'chart', 'version', 'namespace', 'values', 'set', 'setString', 'needs', 'condition', 'installed', 'createNamespace', 'wait', 'waitForJobs', 'timeout', 'kubeContext', 'labels', 'inherit', 'dependencies', 'hooks', 'secrets', 'setFile'],
+    dependencies: ['chart', 'version', 'alias'],
+    repositories: ['name', 'url', 'oci', 'username', 'password', 'caFile', 'certFile', 'keyFile', 'skipTLSVerify', 'passCredentials'],
+    environment: ['values', 'secrets', 'kubeContext', 'missingFileHandler'],
+    hooks: ['events', 'command', 'args', 'showlogs'],
+    set: ['name', 'value', 'file', 'values'],
+};
+
+function sortKey(index: number, name: string): string {
+    return String(index >= 0 ? index : 500).padStart(3, '0') + name;
 }
 
 function advertise(snapshot: { error: string | null; loading: boolean }): vscode.CompletionItem[] {
