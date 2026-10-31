@@ -95,6 +95,30 @@ async function main(): Promise<void> {
         fs.unlinkSync(scratch);
     }
 
+    // 6b. Completion replace ranges: accepting `.Values` after typing `.`
+    //     must replace the dot (regression: `..Values` doubling).
+    const dotScratch = path.join(examplesDir, 'helmfile-dot-completion-check.yaml.gotmpl');
+    fs.writeFileSync(dotScratch, 'releases:\n  - name: a\n    chart: b\n    values:\n      - x: {{ .');
+    try {
+        const dotUri = vscode.Uri.file(dotScratch);
+        const ddoc = await vscode.workspace.openTextDocument(dotUri);
+        await vscode.window.showTextDocument(ddoc);
+        const pos = ddoc.positionAt(ddoc.getText().length);
+        const items = (await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', dotUri, pos)) as { items?: vscode.CompletionItem[] };
+        const dotItem = (items?.items ?? []).find(i => (typeof i.label === 'string' ? i.label : String((i.label as { label: string }).label)) === '.Values');
+        check('dot path completion offered', dotItem != null, `labels=${(items?.items ?? []).slice(0, 6).map(i => i.label).join(',')}`);
+        if (dotItem) {
+            const range = dotItem.range as vscode.Range | { inserting: vscode.Range; replacing: vscode.Range } | undefined;
+            const replacing = range && 'start' in range ? range : range?.replacing;
+            const line = ddoc.lineAt(pos.line);
+            const startChar = replacing?.start.character ?? -1;
+            // The replace range must start at the typed dot (last char of the line).
+            check('dot completion replaces the dot', line.text.endsWith('.') && startChar === line.text.length - 1, `startChar=${startChar} line='${line.text}'`);
+        }
+    } finally {
+        fs.unlinkSync(dotScratch);
+    }
+
     // 7. VSCode-native features: symbols, folding, smart select, code actions.
     // (Semantic tokens have no built-in execute command; covered by unit tests.)
     const actionOffset = text.indexOf('{{ if or .Values.x .Values.y }}');

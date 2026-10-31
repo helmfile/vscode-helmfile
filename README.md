@@ -48,8 +48,7 @@ Host launches with the sample state in `examples/`.
   descriptions.
 - **Block completion**: type `releases`, `repositories` or `dependencies`
   (or `- release`, `- repository`, `- dependency`) and complete to a
-  Tab-navigable snippet; the version placeholder defaults to the newest
-  published version.
+  Tab-navigable snippet.
 - **Repository completion**: `chart:` offers declared repository aliases,
   `repository/chart` offers chart names from the downloaded Helm index,
   `version:` offers the chart's versions (newest first). OCI registries use

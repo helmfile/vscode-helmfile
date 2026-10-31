@@ -1092,5 +1092,85 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     }
 }
 
+
+// ------------------------------------------------- completion replace ranges
+// Accepting `.Values` after typing `.` must REPLACE the dot (default word
+// definition treats `.` as a separator, so without an explicit range the
+// insert appends and produces `..Values`).
+{
+    const { HelmfileCompletionProvider } = require('../src/completion') as typeof import('../src/completion');
+    const mkDoc = (text: string) => ({
+        uri: vscode.Uri.file('/tmp/helmfile-range-test.yaml.gotmpl'),
+        getText: () => text,
+        offsetAt: (pos: { line: number; character: number }) => {
+            const lines = text.split('\n');
+            let offset = 0;
+            for (let i = 0; i < pos.line; i++) offset += (lines[i]?.length ?? 0) + 1;
+            return offset + pos.character;
+        },
+    }) as never;
+    const provider = new HelmfileCompletionProvider(() => 'default');
+    const completions = (text: string, offset: number) => {
+        const doc = mkDoc(text);
+        const lines = text.split('\n');
+        let line = 0, seen = 0;
+        for (let i = 0; i < lines.length; i++) { seen += lines[i].length + 1; if (offset < seen) { line = i; break; } }
+        const character = offset - (lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0));
+        return provider.provideCompletionItems(doc, new vscode.Position(line, character)) as vscode.CompletionList;
+    };
+    const rangeOf = (item: vscode.CompletionItem): { start: number; end: number } => {
+        const range = item.range as { start: vscode.Position; end: vscode.Position };
+        const lines = [];
+        return { start: range.start.character, end: range.end.character };
+    };
+
+    // `{{ .` — the typed dot must be inside the replace range of `.Values`.
+    const dotList = completions('a: {{ .', 7);
+    const valuesItem = dotList.items.find(i => i.label === '.Values') as vscode.CompletionItem;
+    check('context path item exists after bare dot', valuesItem != null, JSON.stringify(dotList.items.map(i => i.label).slice(0, 5)));
+    if (valuesItem) {
+        const r = rangeOf(valuesItem);
+        check('dot included in replace range', r.start === 6 && r.end === 7, JSON.stringify(r));
+    }
+
+    // `{{ .Va` — range covers `.Va` entirely.
+    const partial = completions('a: {{ .Va', 9);
+    const vaItem = partial.items.find(i => i.label === '.Values') as vscode.CompletionItem;
+    if (vaItem) {
+        const r = rangeOf(vaItem);
+        check('partial token covered', r.start === 6 && r.end === 9, JSON.stringify(r));
+    }
+
+    // Root block snippet: typing `rel` at the root replaces it and expands
+    // into `releases:` + first item (no doubling of the typed word).
+    const rootList = completions('rel', 3);
+    const block = rootList.items.find(i => i.label === 'releases (block)') as vscode.CompletionItem;
+    check('root block item offered', block != null, JSON.stringify(rootList.items.map(i => i.label).slice(0, 8)));
+    if (block) {
+        const r = rangeOf(block);
+        const snippet = block.insertText as { value: string };
+        check('root block replaces typed word', r.start === 0 && r.end === 3, JSON.stringify(r));
+        check('root block expands section', snippet.value.startsWith('releases:\n  - name: '), snippet.value);
+    }
+
+    // Inside `releases:` typing `- rel` expands the alias into item fields.
+    const listText = 'releases:\n  - rel';
+    const listList = completions(listText, listText.length);
+    const item2 = listList.items.find(i => i.label === 'release (block)') as vscode.CompletionItem;
+    check('list block item offered', item2 != null, JSON.stringify(listList.items.map(i => i.label).slice(0, 8)));
+    if (item2) {
+        const snippet = item2.insertText as { value: string };
+        check('list block expands item fields', snippet.value.startsWith('name: ') && snippet.value.includes('\n    chart: '), snippet.value);
+    }
+
+    // Field completions replace only the typed key letters.
+    const fieldText = 'releases:\n  - name: a\n    nam';
+    const fieldList = completions(fieldText, fieldText.length);
+    const namespace = fieldList.items.find(i => i.label === 'namespace') as vscode.CompletionItem;
+    if (namespace) {
+        const r = rangeOf(namespace);
+        check('field item covers typed word only', r.end - r.start === 3, JSON.stringify(r));
+    }
+}
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);
