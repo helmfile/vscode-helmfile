@@ -95,6 +95,19 @@ async function main(): Promise<void> {
         fs.unlinkSync(scratch);
     }
 
+    // 7. VSCode-native features: symbols, folding, smart select, code actions.
+    // (Semantic tokens have no built-in execute command; covered by unit tests.)
+    const actionOffset = text.indexOf('{{ if or .Values.x .Values.y }}');
+    const probeOffset = actionOffset >= 0 ? actionOffset + 6 : text.indexOf('{{');
+    const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', doc.uri);
+    check('document symbols produced', (symbols?.length ?? 0) > 0 && symbols.some(s => s.kind === vscode.SymbolKind.Package), JSON.stringify(symbols?.map(s => s.name).slice(0, 5)));
+    const folds = await vscode.commands.executeCommand<vscode.FoldingRange[]>('vscode.executeFoldingRangeProvider', doc.uri);
+    check('folding ranges produced', (folds?.length ?? 0) > 0, `folds=${folds?.length ?? 0}`);
+    const selection = await vscode.commands.executeCommand<vscode.SelectionRange[]>('vscode.executeSelectionRangeProvider', doc.uri, [doc.positionAt(probeOffset)]);
+    check('selection range chain grows', (selection?.length ?? 0) === 1 && !!selection[0].parent, `chain=${!!selection?.[0]?.parent}`);
+    const codeActions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', doc.uri, new vscode.Range(doc.positionAt(probeOffset), doc.positionAt(probeOffset)));
+    check('code actions resolve', Array.isArray(codeActions), `actions=${codeActions?.length ?? 0}`);
+
     if (failures.length) {
         console.error(`[it] ${failures.length} failure(s): ${failures.join(', ')}`);
         process.exitCode = 1;

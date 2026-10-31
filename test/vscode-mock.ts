@@ -47,6 +47,63 @@ class Disposable {
     constructor(readonly cb: () => void = () => {}) {}
     dispose(): void { this.cb(); }
 }
+class ThemeIcon {
+    constructor(readonly id: string) {}
+}
+class SemanticTokensLegend {
+    constructor(readonly tokenTypes: readonly string[], readonly tokenModifiers: readonly string[] = []) {}
+}
+class SemanticTokensBuilder {
+    private slots: number[] = [];
+    private lastLine = 0;
+    private lastChar = 0;
+    constructor(_legend?: SemanticTokensLegend) {}
+    push(line: number, char: number, length: number, tokenType: number, _tokenModifiers = 0): void {
+        const deltaLine = line - this.lastLine;
+        const deltaChar = deltaLine === 0 ? char - this.lastChar : char;
+        this.slots.push(deltaLine, deltaChar, length, tokenType, _tokenModifiers);
+        this.lastLine = line;
+        this.lastChar = char;
+    }
+    build(): { data: number[] } {
+        return { data: this.slots };
+    }
+}
+class DocumentSymbol {
+    children: DocumentSymbol[] = [];
+    constructor(readonly name: string, readonly detail: string, readonly kind: number, readonly range: any, readonly selectionRange: any) {}
+}
+class FoldingRange {
+    constructor(readonly start: number, readonly end: number, readonly kind?: number) {}
+}
+class SelectionRange {
+    constructor(readonly range: any, readonly parent?: SelectionRange) {}
+}
+class CodeAction {
+    edit?: unknown;
+    command?: unknown;
+    isPreferred?: boolean;
+    constructor(readonly title: string, readonly kind?: unknown) {}
+}
+class CodeActionKind {
+    static QuickFix = new CodeActionKind('quickfix');
+    constructor(readonly value: string) {}
+}
+class WorkspaceEdit {
+    private readonly edits: unknown[] = [];
+    delete(_uri: unknown, _range: unknown): void { this.edits.push({ type: 'delete' }); }
+    insert(_uri: unknown, _position: unknown, _text: string): void { this.edits.push({ type: 'insert', text: _text }); }
+    get size(): number { return this.edits.length; }
+}
+class StatusBarSpaceItem {
+    text = '';
+    tooltip: unknown;
+    command?: string;
+    name = '';
+    show(): void {}
+    hide(): void {}
+    dispose(): void {}
+}
 const outputChannel = () => ({
     append: () => {}, appendLine: () => {}, replace: () => {},
     clear: () => {}, show: () => {}, hide: () => {}, dispose: () => {},
@@ -63,10 +120,22 @@ export = {
     Disposable,
     ViewColumn: { Active: -1, Beside: -2, One: 1 },
     DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
+    SymbolKind: { File: 1, Module: 2, Class: 4, Enum: 10, Package: 8 },
+    StatusBarAlignment: { Left: 1, Right: 2 },
+    ThemeIcon,
+    SemanticTokensLegend,
+    SemanticTokensBuilder,
+    DocumentSymbol,
+    FoldingRange,
+    SelectionRange,
+    CodeAction,
+    CodeActionKind,
+    WorkspaceEdit,
     env: {},
     window: {
         activeTextEditor: undefined,
         createOutputChannel: outputChannel,
+        createStatusBarItem: () => new StatusBarSpaceItem(),
         showQuickPick: async () => undefined,
         showTextDocument: async () => ({}),
         showInformationMessage: async () => undefined,
@@ -103,6 +172,10 @@ export = {
         registerHoverProvider: () => ({ dispose: () => {} }),
         registerCodeActionsProvider: () => ({ dispose: () => {} }),
         registerCodeLensProvider: () => ({ dispose: () => {} }),
+        registerDocumentSemanticTokensProvider: () => ({ dispose: () => {} }),
+        registerDocumentSymbolProvider: () => ({ dispose: () => {} }),
+        registerFoldingRangeProvider: () => ({ dispose: () => {} }),
+        registerSelectionRangeProvider: () => ({ dispose: () => {} }),
         createDiagnosticCollection: () => ({ set: () => {}, delete: () => {}, clear: () => {}, dispose: () => {} }),
     },
     tasks: { task: () => ({}), Task: class {}, ShellExecution: class {} },

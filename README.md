@@ -47,6 +47,21 @@ with feature parity.
   example and reference link.
 - Values paths show the resolved value, its source file and environment.
 
+### VSCode integration
+
+- **Semantic highlighting** for template actions: keywords, Go / Sprig /
+  Helmfile functions, value paths, variables, strings, comments and
+  numbers (on top of the TextMate grammar).
+- **Outline & breadcrumbs**: releases, repositories, environments (with
+  values files) and templates in the document symbol tree.
+- **Folding** for YAML blocks and `---` documents.
+- **Smart selection** (expand selection): identifier → dotted path →
+  `{{ action }}` → YAML pair → mapping → document.
+- **Quick fixes**: delete empty `{{}}` actions, close unclosed actions,
+  remove orphan `}}`, refresh chart repositories from the warning.
+- **Status bar** shows the active environment; click to switch.
+- Diagnostics re-run debounced (150 ms) while typing.
+
 ### Environments
 
 - Code lens on each `environments:` entry switches the active environment
@@ -74,7 +89,9 @@ with feature parity.
 - Repository diagnostics: missing names/URLs, duplicate aliases, undeclared
   `chart:` prefixes, charts missing from the index, unavailable exact
   versions.
-- Unclosed Go template actions.
+- Unclosed / empty / orphan Go template delimiters and unmatched
+  `if` / `range` / `with` / `define` / `block` blocks, plus YAML syntax
+  errors — each with quick fixes.
 
 ### Chart repositories
 
