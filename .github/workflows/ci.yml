@@ -50,7 +50,15 @@ jobs:
           path: ~/.vscode-test
           key: vscode-test-${{ runner.os }}-stable
       - name: Run integration tests
-        run: xvfb-run -a node test/integration/run.js
+        # The VSCode test-build download from the CDN occasionally times out
+        # on GitHub runners (ETIMEDOUT during "Resolving version...");
+        # retry a couple of times before failing the job.
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        with:
+          max_attempts: 3
+          retry_wait_seconds: 15
+          timeout_minutes: 10
+          command: xvfb-run -a node test/integration/run.js
         env:
           CI: '1'
 

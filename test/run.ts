@@ -17,6 +17,9 @@ import { commandProblem, buildCommand, protectionProblem, isProtectedEnvironment
 import { valuePathAt } from '../src/references';
 import { schemaContext } from '../src/schema';
 import { parseCompletionPath } from '../src/yamlTree';
+import { tokenizeAction, SEMANTIC_TOKEN_TYPES } from '../src/semanticTokens';
+import { helmfileSymbols } from '../src/documentSymbol';
+import { HelmfileCodeActionProvider } from '../src/codeActions';
 
 const EXAMPLES = path.resolve(__dirname, '../examples');
 const STATE = vscode.Uri.file(path.join(EXAMPLES, 'helmfile.yaml.gotmpl'));
@@ -295,6 +298,59 @@ entries:
     check('else outside if/range/with flagged', strayElse.length === 1 && strayElse[0].message.includes('outside of an'), JSON.stringify(strayElse));
     eq(blocks('{{ if .a').length, 0, 'unclosed action not double-reported as block');
     eq(blocks('{{ if .a }}x{{ end }} tail').length, 0, 'balanced with trailing text');
+}
+
+// ---------------------------------------------------------------- semantic tokens
+{
+    const text = 'releases:\n  - name: x\n    values:\n      - {{ if .Values.db.host }}{{ .Values.db.host | quote }}{{ end }}\n';
+    const actions = TemplateScanner.scan(text);
+    const tokens = actions.flatMap(action => tokenizeAction(text, action));
+    const typeOf = (word: string): string | undefined =>
+        tokens.find(token => text.slice(token.start, token.end) === word)?.type;
+    eq(typeOf('if'), 'keyword', 'if is keyword');
+    eq(typeOf('end'), 'keyword', 'end is keyword');
+    eq(typeOf('quote'), 'function', 'sprig function');
+    eq(typeOf('.Values.db.host'), 'property', 'dotted path');
+    check('token legend ordered', SEMANTIC_TOKEN_TYPES.indexOf('function') > 0 && SEMANTIC_TOKEN_TYPES.length === 9, `${SEMANTIC_TOKEN_TYPES.length} types`);
+    const str = tokenizeAction('a {{ "x}}y" }} b', TemplateScanner.scan('a {{ "x}}y" }} b')[0]);
+    check('string with }} stays one token', str.length === 1 && str[0].type === 'string', JSON.stringify(str));
+    const varCase = tokenizeAction('{{ $x := .a }}', TemplateScanner.scan('{{ $x := .a }}')[0]);
+    check('$var is variable', varCase.some(t => t.type === 'variable' && t.end - t.start === 2), JSON.stringify(varCase));
+}
+
+// ---------------------------------------------------------------- document symbols
+{
+    const symbols = helmfileSymbols(fs.readFileSync(path.join(EXAMPLES, 'helmfile.yaml.gotmpl'), 'utf8'));
+    check('release symbols found', symbols.some(s => s.kind === 'release' && (s.name === 'fluentbit' || s.name === 'spark-web-proxy')), JSON.stringify(symbols.map(s => `${s.kind}:${s.name}`)));
+    check('repository symbols found', symbols.some(s => s.kind === 'repository'), JSON.stringify(symbols.map(s => `${s.kind}:${s.name}`)));
+    check('environment symbols found', symbols.some(s => s.kind === 'environment'), JSON.stringify(symbols.map(s => `${s.kind}:${s.name}`)));
+    check('template symbols found', symbols.some(s => s.kind === 'template'), JSON.stringify(symbols.map(s => `${s.kind}:${s.name}`)));
+    check('selection within range', symbols.every(s => s.selectionStart >= s.start && s.selectionEnd <= s.end), 'selection contained');
+}
+
+// ---------------------------------------------------------------- code actions
+{
+    const provider = new HelmfileCodeActionProvider();
+    const mkDoc = (text: string): unknown => ({
+        uri: vscode.Uri.file('/tmp/helmfile-test.yaml.gotmpl'),
+        getText: () => text,
+        lineAt: (line: number) => {
+            const lines = text.split('\n');
+            const content = lines[Math.min(line, lines.length - 1)] ?? '';
+            return { range: { end: { line, character: content.length } }, text: content };
+        },
+    });
+    const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 2 }, intersection: (other: { start: { line: number } }) => other } as never;
+    const diag = (message: string): { message: string; source: string; range: unknown } => ({ message, source: 'helmfile', range });
+    const doc = mkDoc('a: {{}}') as never;
+    const empty = provider.provideCodeActions(doc, range as never, { diagnostics: [diag('Empty Go template action: nothing between {{ and }}')] } as never) as { title: string; isPreferred?: boolean }[];
+    check('empty action quick fix', empty.length === 1 && empty[0].title.startsWith('Delete empty') && empty[0].isPreferred === true, JSON.stringify(empty.map(a => a.title)));
+    const orphan = provider.provideCodeActions(doc, range as never, { diagnostics: [diag('Unmatched Go template closing: no matching {{')] } as never) as { title: string }[];
+    check('orphan quick fix', orphan.length === 1 && orphan[0].title === 'Delete orphan }}', JSON.stringify(orphan.map(a => a.title)));
+    const unclosed = provider.provideCodeActions(doc, range as never, { diagnostics: [diag('Unclosed Go template action: expected }}')] } as never) as { title: string }[];
+    check('unclosed quick fix', unclosed.length === 1 && unclosed[0].title.startsWith('Insert }}'), JSON.stringify(unclosed.map(a => a.title)));
+    const refresh = provider.provideCodeActions(doc, range as never, { diagnostics: [{ ...diag('Chart was not found'), code: 'helmfile.refreshRepositories' }] } as never) as { title: string }[];
+    check('refresh quick fix', refresh.length === 1 && refresh[0].title.startsWith('Refresh'), JSON.stringify(refresh.map(a => a.title)));
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

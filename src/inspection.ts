@@ -19,6 +19,9 @@ const EXACT_VERSION = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?
 export class HelmfileDiagnostics implements vscode.Disposable {
     private readonly collection: vscode.DiagnosticCollection;
     private readonly documents = new Set<vscode.Uri>();
+    private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
+    /** Debounce for keystroke-driven re-analysis (ms). */
+    static readonly DEBOUNCE_MS = 150;
 
     constructor(private readonly env: EnvironmentService) {
         this.collection = vscode.languages.createDiagnosticCollection('helmfile');
@@ -27,14 +30,28 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     track(document: vscode.TextDocument): void {
         if (document.languageId !== 'helmfile' && !isHelmfileName(document.uri.path.split('/').pop() ?? '')) return;
         this.documents.add(document.uri);
-        this.analyze(document);
+        // Typing bursts re-parse YAML + repositories; debounce to keep edits smooth.
+        const key = document.uri.toString();
+        const timer = this.pending.get(key);
+        if (timer) clearTimeout(timer);
+        this.pending.set(key, setTimeout(() => {
+            this.pending.delete(key);
+            this.analyze(document);
+        }, HelmfileDiagnostics.DEBOUNCE_MS));
     }
 
-    /** Re-analyze every tracked document (repository snapshots changed). */
+    /** Re-analyze every tracked document immediately (repository snapshots changed). */
     refreshAll(): void {
         for (const uri of this.documents) {
             const document = vscode.workspace.textDocuments.find(candidate => candidate.uri.toString() === uri.toString());
-            if (document) this.analyze(document);
+            if (document) {
+                const timer = this.pending.get(uri.toString());
+                if (timer) {
+                    clearTimeout(timer);
+                    this.pending.delete(uri.toString());
+                }
+                this.analyze(document);
+            }
         }
     }
 
@@ -49,11 +66,18 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     }
 
     forget(uri: vscode.Uri): void {
+        const timer = this.pending.get(uri.toString());
+        if (timer) {
+            clearTimeout(timer);
+            this.pending.delete(uri.toString());
+        }
         this.documents.delete(uri);
         this.collection.delete(uri);
     }
 
     dispose(): void {
+        for (const timer of this.pending.values()) clearTimeout(timer);
+        this.pending.clear();
         this.collection.dispose();
     }
 }
