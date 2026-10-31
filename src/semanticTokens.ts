@@ -123,16 +123,25 @@ export class HelmfileSemanticTokensProvider implements vscode.DocumentSemanticTo
         const lineStarts = computeLineStarts(text);
         for (const action of TemplateScanner.scan(text)) {
             for (const token of tokenizeAction(text, action)) {
-                // Semantic tokens may not span lines: split per line.
+                // Semantic tokens may not span lines: split per line. Every
+                // iteration must advance `offset` — an unterminated string
+                // token (e.g. `{{ get """ }}`) spans the rest of the file
+                // including newlines, and a non-advancing branch here spins
+                // the extension host at 100% CPU forever.
                 let offset = token.start;
                 while (offset < token.end) {
                     const line = lineIndex(lineStarts, offset);
-                    const lineEnd = line + 1 < lineStarts.length ? lineStarts[line + 1] - 1 : text.length;
-                    const end = Math.min(token.end, lineEnd);
+                    // Position of the newline char, or text.length on the last line.
+                    const newline = line + 1 < lineStarts.length ? lineStarts[line + 1] - 1 : text.length;
+                    const end = Math.min(token.end, newline);
                     if (end > offset) {
                         builder.push(line, offset - lineStarts[line], end - offset, SEMANTIC_TOKEN_TYPES.indexOf(token.type));
+                        offset = end;
+                    } else {
+                        // offset sits on the newline itself: skip it (tokens
+                        // never cover the newline char).
+                        offset = newline + 1;
                     }
-                    offset = end;
                 }
             }
         }

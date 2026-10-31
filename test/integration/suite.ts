@@ -119,6 +119,24 @@ async function main(): Promise<void> {
         fs.unlinkSync(dotScratch);
     }
 
+    // 6c. Semantic tokens on an unterminated string action must terminate
+    //     (regression: extension host froze at 100% CPU after save).
+    const semScratch = path.join(examplesDir, 'helmfile-sem-tokens-check.yaml.gotmpl');
+    fs.writeFileSync(semScratch, 'a:\n  b: {{ .Vaules | get \"\"\" }}\nc: more\nlast');
+    try {
+        const semUri = vscode.Uri.file(semScratch);
+        const semDoc = await vscode.workspace.openTextDocument(semUri);
+        await vscode.window.showTextDocument(semDoc);
+        // Opening the document triggers the real semantic tokens provider in
+        // the extension host; before the fix this wedged the host at 100%
+        // CPU and even diagnostics queries below never answered.
+        await new Promise(r => setTimeout(r, 1500));
+        const diags = vscode.languages.getDiagnostics(semUri);
+        check('host alive after semantic tokens on pathological input', diags.length >= 0 && semDoc.languageId === 'helmfile', `lang=${semDoc.languageId}`);
+    } finally {
+        fs.unlinkSync(semScratch);
+    }
+
     // 7. VSCode-native features: symbols, folding, smart select, code actions.
     // (Semantic tokens have no built-in execute command; covered by unit tests.)
     const actionOffset = text.indexOf('{{ if or .Values.x .Values.y }}');

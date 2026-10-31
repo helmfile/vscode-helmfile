@@ -24,7 +24,7 @@ import { commandProblem, buildCommand, protectionProblem, isProtectedEnvironment
 import { valuePathAt } from '../src/references';
 import { schemaContext } from '../src/schema';
 import { parseCompletionPath, parseTree } from '../src/yamlTree';
-import { tokenizeAction, SEMANTIC_TOKEN_TYPES } from '../src/semanticTokens';
+import { tokenizeAction, SEMANTIC_TOKEN_TYPES, HelmfileSemanticTokensProvider } from '../src/semanticTokens';
 import { helmfileSymbols } from '../src/documentSymbol';
 import { HelmfileCodeActionProvider } from '../src/codeActions';
 
@@ -404,6 +404,39 @@ entries:
     check('string with }} stays one token', str.length === 1 && str[0].type === 'string', JSON.stringify(str));
     const varCase = tokenizeAction('{{ $x := .a }}', TemplateScanner.scan('{{ $x := .a }}')[0]);
     check('$var is variable', varCase.some(t => t.type === 'variable' && t.end - t.start === 2), JSON.stringify(varCase));
+
+    // Regression (extension host freeze): an unterminated string action token
+    // (e.g. `{{ .Vaules | get """ }}`) spans the rest of the file including
+    // newlines; the per-line split must always advance and never emit a token
+    // that crosses or covers a newline.
+    {
+        const provider = new HelmfileSemanticTokensProvider();
+        const cases: string[] = [
+            'a:\n  b: {{ .Vaules | get """ }}\nc: more\nlast line no newline',
+            'x: {{ "unterminated\nnext line\n}} more',
+            'k: {{ `multi\nline` }}\nz: 1\n',
+            'q: {{ """ }}\n', // third quote swallows everything incl. trailing \n
+        ];
+        let worst = 0;
+        for (const text of cases) {
+            const doc = { getText: () => text, uri: { fsPath: '/tmp/sem.yaml.gotmpl' } } as never;
+            const t0 = Date.now();
+            const result = provider.provideDocumentSemanticTokens(doc) as { data: number[] };
+            const dt = Date.now() - t0;
+            if (dt > worst) worst = dt;
+            // decode delta-encoded tokens and validate line/col/length
+            const lines = text.split('\n');
+            let line = 0;
+            let col = 0;
+            for (let i = 0; i < result.data.length; i += 5) {
+                line += result.data[i];
+                col = result.data[i] === 0 ? col + result.data[i + 1] : result.data[i + 1];
+                const len = result.data[i + 2];
+                check('token within one line', col + len <= lines[line].length, `case=${JSON.stringify(text.slice(0, 24))} line=${line} col=${col} len=${len}`);
+            }
+        }
+        check('semantic tokens terminate fast', worst < 2000, `worst=${worst}ms`);
+    }
 }
 
 // ---------------------------------------------------------------- document symbols
