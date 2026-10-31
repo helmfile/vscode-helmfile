@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
-import { templateBlocks, unclosedActions } from '../src/inspection';
+import { templateBlocks, unclosedActions, fillMaskedTemplateKeys } from '../src/inspection';
 import { allFunctions, findFunction } from '../src/functionCatalog';
 import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
 import { repositoryModel, query, alias } from '../src/repositories';
@@ -351,6 +351,42 @@ entries:
     check('unclosed quick fix', unclosed.length === 1 && unclosed[0].title.startsWith('Insert }}'), JSON.stringify(unclosed.map(a => a.title)));
     const refresh = provider.provideCodeActions(doc, range as never, { diagnostics: [{ ...diag('Chart was not found'), code: 'helmfile.refreshRepositories' }] } as never) as { title: string }[];
     check('refresh quick fix', refresh.length === 1 && refresh[0].title.startsWith('Refresh'), JSON.stringify(refresh.map(a => a.title)));
+}
+
+// ---------------------------------------------------------------- masked template keys
+// d7y-style states generate whole mapping keys from templates:
+// `  {{ $key }}:` under `environments:` masked to a blank key previously
+// produced "All mapping items must start at the same column" false positives.
+{
+    const d7y = [
+        '# A workaround for https://github.com/roboll/helmfile/issues/1045',
+        'environments:',
+        '{{ $environments := (readFile "bases/environments.yaml" | fromYaml) }}',
+        '{{ range $key, $env := (index $environments "environments") }}',
+        '  {{ $key }}:',
+        '    values:',
+        '      - "environments/{{ $key }}/*.yaml.gotmpl"',
+        '{{- end }}',
+        '',
+        'helmfiles:',
+        '  - path: applications/dragonfly.yaml',
+        '',
+    ].join('\n');
+    const { TemplateScanner } = require('../src/templateScanner') as typeof import('../src/templateScanner');
+    const { parseTree } = require('../src/yamlTree') as typeof import('../src/yamlTree');
+    const filled = fillMaskedTemplateKeys(TemplateScanner.mask(d7y));
+    const errors = parseTree(filled).errors;
+    eq(errors.length, 0, `no false YAML errors on template keys: ${JSON.stringify(errors.map(e => e.message))}`);
+    const maskedLine = TemplateScanner.mask(d7y).split('\n')[4];
+    const filledLine = filled.split('\n')[4];
+    check(
+        'filler keeps length + colon position',
+        filledLine.length === maskedLine.length && filledLine.endsWith(':') && /^x+:$/.test(filledLine),
+        `${JSON.stringify(maskedLine)} -> ${JSON.stringify(filledLine)}`,
+    );
+    // A deliberately broken document still reports the genuine error.
+    const broken = fillMaskedTemplateKeys(TemplateScanner.mask('a: 1\n  b: 2'));
+    check('genuine YAML errors still reported', parseTree(broken).errors.length > 0, 'expected error');
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

@@ -160,12 +160,23 @@ export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): 
 }
 
 /**
+ * Equal-length filler for template-derived mapping keys: `  {{ $key }}:`
+ * masks to `        :` (a null key misaligned with its siblings); replacing
+ * the blank key with `x` characters keeps the parse valid and offsets
+ * unchanged. Only whitespace-only keys are touched.
+ */
+export function fillMaskedTemplateKeys(masked: string): string {
+    return masked.replace(/^[ \t]+:(?=\s|$)/gm, line => 'x'.repeat(line.length - 1) + ':');
+}
+
+/**
  * Genuine YAML syntax errors, reported as red squiggles. The document is
  * parsed with Go template actions masked out (equal-length spaces), so
- * valid `{{ ... }}` blocks are not misread as YAML flow mappings.
+ * valid `{{ ... }}` blocks are not misread as YAML flow mappings; keys
+ * produced by whole-template actions are filled to stay valid.
  */
 function yamlSyntaxErrors(document: vscode.TextDocument, diagnostics: vscode.Diagnostic[]): void {
-    const masked = TemplateScanner.mask(document.getText());
+    const masked = fillMaskedTemplateKeys(TemplateScanner.mask(document.getText()));
     for (const error of parseTree(masked).errors) {
         const start = Math.min(Math.max(0, error.offset), masked.length);
         const end = Math.min(Math.max(start + 1, error.end), masked.length);
