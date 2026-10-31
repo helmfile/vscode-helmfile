@@ -259,4 +259,10 @@ export = {
     tasks: { task: () => ({}), Task: class {}, ShellExecution: class {} },
     ProgressLocation: { SourceControl: 1, Window: 10 },
     ConfigurationTarget: { Global: 1, Workspace: 2 },
+    EndOfLine: { LF: 1, CRLF: 2 },
+    CancellationTokenSource: class CancellationTokenSource {
+        readonly token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => {} }) };
+        cancel(): void { (this.token as { isCancellationRequested: boolean }).isCancellationRequested = true; }
+        dispose(): void {}
+    },
 };
