@@ -256,7 +256,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         const head = text.slice(Math.max(0, offset - 500), offset);
         const subchart = /(?:^|[^.A-Za-z0-9_])\$?\.Subcharts\.([A-Za-z0-9_]+)\.Values\.$/.exec(head);
         if (subchart) {
-            const model = subchartModel(context, subchart[1], contentStamp());
+            const model = subchartModel(context, subchart[1], contentStamp(), this.env());
             if (model) return keyItems(model.keysUnder([]), text, offset, segmentLength(pathMatch[2]));
         }
         const { parent, partial } = splitPartial(pathMatch[2]);
@@ -264,10 +264,11 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         return keyItems(model.keysUnder(parent).filter(key => key.key.startsWith(partial)), text, offset, segmentLength(pathMatch[2]));
     }
 
-    /** `.Subcharts.<name>.Values.` keys, resolved against the dependency's own values.yaml. */
+    /** `.Subcharts.<name>.Values.` keys: the dependency's effective values
+     * (its own defaults overlaid with the parent's `<name>` subtree). */
     private subchartValueCompletions(text: string, offset: number, context: ChartTemplateContext, typedSuffix: string): vscode.CompletionList {
         const segments = typedSuffix.split('.').filter(segment => segment.length > 0); // [name, 'Values', ...rest]
-        const model = subchartModel(context, segments[0], contentStamp());
+        const model = subchartModel(context, segments[0], contentStamp(), this.env());
         if (!model) return new vscode.CompletionList([], false);
         const { parent, partial } = splitPartial(segments.slice(2).join('.'));
         return keyItems(model.keysUnder(parent).filter(key => key.key.startsWith(partial)), text, offset, segmentLength(typedSuffix));

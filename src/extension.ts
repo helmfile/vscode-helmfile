@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { EnvironmentService } from './settings';
 import { bumpContentVersion, closeOpenDocument, isHelmfileName, readSource, setOpenDocument, stateFor } from './values';
 import { HelmfileCompletionProvider } from './completion';
+import { CHART_YAML_SELECTOR, ChartYamlCompletionProvider } from './chartYaml';
 import { HelmfileDefinitionProvider, HelmfileReferencesProvider } from './references';
 import { HelmfileHoverProvider } from './hover';
 import { HelmfileSignatureHelpProvider } from './signatureHelp';
@@ -65,6 +66,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Language providers.
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider(HELMFILE_SELECTOR, completion, '.', '/', ' ', '"'),
+        vscode.languages.registerCompletionItemProvider(CHART_YAML_SELECTOR, new ChartYamlCompletionProvider()),
         vscode.languages.registerDefinitionProvider(HELMFILE_SELECTOR, definition),
         vscode.languages.registerReferenceProvider(HELMFILE_SELECTOR, references),
         vscode.languages.registerHoverProvider(HELMFILE_SELECTOR, hover),

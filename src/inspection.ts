@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
 import { chartFileOf, chartTemplateContextFor, chartTemplateDetected, type ChartTemplateContext } from './chartContext';
 import { chartDefinesFor } from './chartDefines';
+import { chartModelFor } from './chartModel';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
 import { contentStamp, isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
@@ -72,7 +73,10 @@ export class HelmfileDiagnostics implements vscode.Disposable {
         // only template/YAML checks apply.
         if (chartTemplateDetected(chartFileOf(document.uri), contentStamp())) {
             const chartContext = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
-            if (chartContext) missingDefineDiagnostics(document, chartContext, diagnostics);
+            if (chartContext) {
+                missingDefineDiagnostics(document, chartContext, diagnostics);
+                schemaUnknownKeyDiagnostics(document, chartContext, diagnostics);
+            }
             this.collection.set(document.uri, diagnostics);
             return;
         }
@@ -472,6 +476,9 @@ function diagnosticAt(source: SourceFile, start: number, end: number, message: s
 /** Quick-fix payload for missing-define diagnostics: define name + helpers file. */
 export const missingChartDefines = new WeakMap<vscode.Diagnostic, { name: string; helpers: string }>();
 
+/** Quick-fix payload for schema-unknown-key diagnostics: dotted path + schema file + JSON type to declare. */
+export const schemaUnknownKeys = new WeakMap<vscode.Diagnostic, { segments: string[]; schemaFile: string; type: string }>();
+
 const INCLUDE_NAME = /\b(?:include|template)\s+"((?:[^"\\]|\\.)*)"/g;
 
 /** Warn about `include "x"` / `template "x"` calls with no matching `define`. */
@@ -495,6 +502,40 @@ function missingDefineDiagnostics(document: vscode.TextDocument, context: ChartT
             );
             diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
             missingChartDefines.set(diagnostic, { name, helpers: path.join(context.root, 'templates', '_helpers.tpl') });
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
+const SCHEMA_VALUE_PATH = /\$?\.Values((?:\.[A-Za-z0-9_]+)+)/g;
+
+/**
+ * Warn about `.Values.x.y` references that a strict values.schema.json
+ * (`additionalProperties: false` at the parent) does not declare — helm
+ * rejects those at install time. Explicit `.Values` paths only; relative
+ * paths inside `range`/`with` are not schema-checked.
+ */
+function schemaUnknownKeyDiagnostics(document: vscode.TextDocument, context: ChartTemplateContext, diagnostics: vscode.Diagnostic[]): void {
+    const schemaFile = path.join(context.root, 'values.schema.json');
+    if (!fs.existsSync(schemaFile)) return;
+    const text = document.getText();
+    const model = chartModelFor(context, contentStamp(), 'default');
+    const warned = new Set<string>();
+    for (const action of TemplateScanner.scan(text)) {
+        if (!action.closed) continue; // still being typed
+        const body = text.slice(action.bodyStart, action.bodyEnd);
+        for (const match of body.matchAll(SCHEMA_VALUE_PATH)) {
+            const segments = match[1].slice(1).split('.');
+            const dotted = segments.join('.');
+            if (warned.has(dotted)) continue;
+            const reason = model.schemaRejects(segments);
+            if (!reason) continue;
+            warned.add(dotted);
+            const start = action.bodyStart + (match.index ?? 0);
+            const diagnostic = new vscode.Diagnostic(offsetRange(text, start, start + match[0].length), reason, vscode.DiagnosticSeverity.Warning);
+            diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+            const kind = model.valueAt(segments)?.kind;
+            schemaUnknownKeys.set(diagnostic, { segments, schemaFile, type: kind === 'map' ? 'object' : kind === 'list' ? 'array' : 'string' });
             diagnostics.push(diagnostic);
         }
     }

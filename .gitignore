@@ -6,8 +6,5 @@ node_modules/
 test/integration/*.js
 .vscode-test/
 
-# local verification scratch (VSCode profile, bundled suites)
-.repro/user-data/
-.repro/out.js
-.repro/repro_chart.ts
-.repro/chart-suite.js
+# local verification scratch (VSCode profile, bundled suites, demo recording)
+.repro/

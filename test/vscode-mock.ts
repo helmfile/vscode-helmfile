@@ -7,7 +7,17 @@ class Position {
     constructor(readonly line: number, readonly character: number) {}
 }
 class Range {
-    constructor(readonly start: Position, readonly end: Position) {}
+    readonly start: Position;
+    readonly end: Position;
+    constructor(startOrLine: Position | number, endOrCharacter: Position | number, endLine?: number, endCharacter?: number) {
+        if (typeof startOrLine === 'number') {
+            this.start = new Position(startOrLine, endOrCharacter as number);
+            this.end = new Position(endLine as number, endCharacter as number);
+        } else {
+            this.start = startOrLine;
+            this.end = endOrCharacter as Position;
+        }
+    }
     isEqual(other: Range): boolean {
         return this.start.line === other.start.line && this.start.character === other.start.character
             && this.end.line === other.end.line && this.end.character === other.end.character;

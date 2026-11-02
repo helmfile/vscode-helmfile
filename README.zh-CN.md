@@ -6,6 +6,8 @@
 [helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
 移植而来,功能对齐。
 
+![Chart 能力演示](docs/demo-chart.gif)
+
 ## 安装
 
 ### 方式一:使用预编译 VSIX
@@ -172,7 +174,15 @@ Host),自带 `examples/` 下的示例状态文件。
   基于 chart **生效值**的 `.Values` 键:chart 自身 `values.yaml` 叠加所有
   `chart:` 指向该目录的 helmfile release 的 values 文件、内联 `values:` 与
   `set:` 项。每项补全会标明值来自哪个来源。
-- `.Subcharts.<name>.Values.` 基于 `charts/` 下依赖自身的 `values.yaml` 补全与预览。
+- `.Subcharts.<name>.Values.` 基于依赖的**生效值**补全与预览:依赖自身的
+  `values.yaml`,叠加父 chart `values.yaml` 中的 `<name>:` 键以及指向父 chart
+  的 helmfile release 值覆盖 —— 与 Helm 渲染时的优先级一致。
+- `Chart.yaml` 依赖辅助:`name:` 补全 `charts/` 下已解包的依赖,`version:`
+  补全其 chart 版本,`repository:` 补全 helmfile 状态 `repositories:` 声明的
+  URL,`condition:` 补全 `values.yaml` 中的 `<依赖>.enabled` 键。
+- chart 含严格 `values.schema.json`(`additionalProperties: false`)时,引用
+  未声明的 `.Values` 键会产生警告,并提供**在 values.schema.json 中声明**
+  快速修复,自动插入缺失的属性链。
 - `.Files.Get "…"` / `.Files.Glob "…"` 补全 chart 根下的文件路径;悬停引号内
   的路径可预览文件内容(`Glob` 则列出匹配文件)。
 - `range` / `with` 块内,相对路径 `.field` 基于被迭代的值补全 —— 遍历对象列表时

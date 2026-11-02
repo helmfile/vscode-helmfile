@@ -161,9 +161,12 @@ async function main(): Promise<void> {
     fs2.mkdirSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar'), { recursive: true });
     fs2.writeFileSync(path.join(chartWs, 'helmfile.yaml'),
         'releases:\n  - name: demo\n    chart: ./charts/demo\n    values:\n      - ./demo-values.yaml\n    set:\n      - name: replicaCount\n        value: 3\n');
-    fs2.writeFileSync(path.join(chartWs, 'demo-values.yaml'), 'image:\n  tag: overlay-tag\n');
+    fs2.writeFileSync(path.join(chartWs, 'demo-values.yaml'), 'image:\n  tag: overlay-tag\nsidecar:\n  port: 7070\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'Chart.yaml'), 'apiVersion: v2\nname: demo\nversion: 0.1.0\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'values.yaml'), 'image:\n  repository: nginx\n  tag: default-tag\n');
+    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'values.schema.json'), JSON.stringify({
+        properties: { image: { type: 'object', properties: { repository: { type: 'string' }, tag: { type: 'string' } }, additionalProperties: false } },
+    }, null, 2));
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar', 'Chart.yaml'), 'apiVersion: v2\nname: sidecar\nversion: 0.1.0\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar', 'values.yaml'), 'port: 9090\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'templates', '_helpers.tpl'),
@@ -195,6 +198,13 @@ async function main(): Promise<void> {
         check('chart values completion includes release overlay', overlayKeys.includes('replicaCount'), `labels=${overlayKeys.slice(0, 6).join(',')}`);
         const subchartKeys = await chartCompleteAt('{{ .Subcharts.sidecar.Values.');
         check('subchart values completion', subchartKeys.includes('port'), `labels=${subchartKeys.slice(0, 6).join(',')}`);
+        const subHoverPath = path.join(chartWs, 'charts', 'demo', 'templates', 'sub-hover.yaml');
+        fs2.writeFileSync(subHoverPath, '{{ .Subcharts.sidecar.Values.port }}\n');
+        const subchartHoverDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(subHoverPath));
+        const subHovers = (await vscode.commands.executeCommand('vscode.executeHoverProvider', subchartHoverDoc.uri, subchartHoverDoc.positionAt('{{ .Subcharts.sidecar.Values.port }}'.indexOf('port') + 1))) as vscode.Hover[];
+        const subHoverText = (subHovers ?? []).map(h => (Array.isArray(h.contents) ? h.contents : [h.contents]).map(c => (c && typeof c === 'object' && 'value' in c ? String(c.value) : String(c))).join('|')).join(' || ');
+        check('subchart hover previews parent override', subHoverText.includes('7070') && subHoverText.includes('demo-values.yaml'), subHoverText.slice(0, 120));
+        fs2.rmSync(subHoverPath, { force: true });
         for (const probe of fs2.readdirSync(path.join(chartWs, 'charts', 'demo', 'templates')).filter(f => f.startsWith('complete-probe-'))) {
             fs2.rmSync(path.join(chartWs, 'charts', 'demo', 'templates', probe), { force: true });
         }
@@ -240,6 +250,26 @@ async function main(): Promise<void> {
         const brokenActions = (await vscode.commands.executeCommand('vscode.executeCodeActionProvider', brokenUri, new vscode.Range(0, 20, 0, 24))) as vscode.CodeAction[];
         check('missing define quick fix', (brokenActions ?? []).some(a => a.title === 'Create define "demo.missing"'), JSON.stringify(brokenActions?.map(a => a.title)));
         void brokenDoc;
+
+        // Schema unknown-key validation + quick fix.
+        const schemaUri = vscode.Uri.file(path.join(chartWs, 'charts', 'demo', 'templates', 'schema-check.yaml'));
+        fs2.writeFileSync(schemaUri.fsPath, 'note: {{ .Values.image.repo }}\n');
+        await vscode.workspace.openTextDocument(schemaUri);
+        await sleep(1200);
+        const schemaDiags = (vscode.languages.getDiagnostics().filter(([uri]) => uri.toString() === schemaUri.toString())[0]?.[1] ?? []).filter(d => d.source === 'helmfile');
+        check('schema unknown key diagnostic', schemaDiags.some(d => d.message.includes('values.schema.json')), JSON.stringify(schemaDiags.map(d => d.message)));
+        const schemaActions = (await vscode.commands.executeCommand('vscode.executeCodeActionProvider', schemaUri, new vscode.Range(0, 20, 0, 24))) as vscode.CodeAction[];
+        check('schema quick fix', (schemaActions ?? []).some(a => a.title === 'Declare "image.repo" in values.schema.json'), JSON.stringify(schemaActions?.map(a => a.title)));
+        fs2.rmSync(schemaUri.fsPath);
+
+        // Chart.yaml dependency completion (pattern-registered provider).
+        const chartYamlUri = vscode.Uri.file(path.join(chartWs, 'charts', 'demo', 'Chart.yaml'));
+        fs2.appendFileSync(chartYamlUri.fsPath, 'dependencies:\n  - name: side\n');
+        const chartYamlDoc = await vscode.workspace.openTextDocument(chartYamlUri);
+        const chartYamlItems = (await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', chartYamlUri, new vscode.Position(4, 13))) as { items?: vscode.CompletionItem[] };
+        const chartYamlLabels = (chartYamlItems?.items ?? []).map(i => typeof i.label === 'string' ? i.label : String((i.label as { label: string }).label));
+        check('Chart.yaml dependency name completion', chartYamlLabels.includes('sidecar'), `labels=${chartYamlLabels.slice(0, 6).join(',')}`);
+        void chartYamlDoc;
     } finally {
         fs2.rmSync(chartWs, { recursive: true, force: true });
     }

@@ -131,13 +131,13 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
         if (builtin) {
             const subchart = /^Subcharts\.([A-Za-z0-9_]+)\.Values\.(.+)$/.exec(builtin.text);
             if (subchart) {
-                const model = subchartModel(context, subchart[1], contentStamp());
+                const model = subchartModel(context, subchart[1], contentStamp(), this.env.get());
                 const info = model?.valueAt(subchart[2].split('.'));
                 if (info) {
                     const content = new vscode.MarkdownString();
                     content.appendMarkdown(`**Subcharts.${subchart[1]}.Values.${subchart[2]}** — ${info.kind === 'scalar' ? 'value' : info.kind}:`);
                     content.appendCodeblock(info.preview, 'yaml');
-                    content.appendMarkdown(`\n\nFrom \`${info.source}\` (subchart \`${subchart[1]}\`'s values.yaml).`);
+                    content.appendMarkdown(`\n\nFrom \`${info.source}\` (subchart \`${subchart[1]}\`'s effective values).`);
                     return new vscode.Hover(content, offsetRange(text, builtin.start, builtin.end));
                 }
             }

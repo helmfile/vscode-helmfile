@@ -6,6 +6,8 @@ Helmfile state file support for VSCode, ported from the
 [helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
 with feature parity.
 
+![Chart assistance demo](docs/demo-chart.gif)
+
 ## Installation
 
 ### From a prebuilt VSIX
@@ -205,8 +207,19 @@ chart-aware assistance inside `<chart>/templates/` files
   with the values files, inline `values:` mappings and `set:` entries of
   every helmfile release whose `chart:` points at this directory. Each
   completion shows which source provided the value.
-- `.Subcharts.<name>.Values.` completes and previews keys from the
-  dependency's own `values.yaml` in `charts/`.
+- `.Subcharts.<name>.Values.` completes and previews the dependency's
+  **effective values**: its own `values.yaml` overlaid with the `<name>`
+  key of the parent chart's `values.yaml` and of every helmfile release
+  values overlay targeting the parent chart — the same precedence Helm
+  applies at render time.
+- `Chart.yaml` gets dependency assistance: `name:` offers unpacked
+  dependencies from `charts/`, `version:` their chart version,
+  `repository:` the URLs declared in the helmfile state's `repositories:`,
+  and `condition:` the `<dependency>.enabled` keys from `values.yaml`.
+- When the chart ships a strict `values.schema.json`
+  (`additionalProperties: false`), referencing an undeclared `.Values`
+  key produces a warning with a **Declare in values.schema.json** quick
+  fix that inserts the missing property chain.
 - `.Files.Get "…"` / `.Files.Glob "…"` complete file paths under the
   chart root, and hovering the quoted path previews the file's content
   (or, for `Glob`, the list of matching files).

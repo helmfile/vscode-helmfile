@@ -39,6 +39,10 @@ export interface ChartModel {
     elementKeys(segments: readonly string[]): readonly ChartKey[];
     /** Description of a path from values.schema.json, or null. */
     schemaDescriptionAt(segments: readonly string[]): string | null;
+    /** Why values.schema.json rejects a dotted path (`additionalProperties:
+     * false` at a strict parent that does not declare the key), or null
+     * when the schema allows or does not cover the path. */
+    schemaRejects(segments: readonly string[]): string | null;
     /** Files reachable via `.Files` (relative, `/`-separated, templates/ excluded). */
     readonly files: readonly string[];
 }
@@ -67,7 +71,7 @@ export function iterationBaseModel(valuePath: string, context: ChartTemplateCont
     if (withoutRoot.startsWith('.Subcharts.')) {
         const segments = withoutRoot.slice('.Subcharts.'.length).split('.');
         if (segments.length < 2 || segments[1] !== 'Values') return null;
-        const model = subchartModel(context, segments[0], stamp);
+        const model = subchartModel(context, segments[0], stamp, environment);
         return model ? { model, segments: segments.slice(2).filter(segment => segment.length > 0) } : null;
     }
     if (withoutRoot.startsWith('.Values.')) {
@@ -76,23 +80,55 @@ export function iterationBaseModel(valuePath: string, context: ChartTemplateCont
     return null;
 }
 
-/** Model of a dependency chart under `<parent>/charts/<name>` (chart defaults + schema only). */
-export function subchartModel(parent: ChartTemplateContext, name: string, stamp: number): ChartModel | null {
+/** Values contributed by the parent chart for this dependency, as Helm
+ * merges them: the parent's effective `<name>` subtree (chart defaults plus
+ * its helmfile overlay) wins over the dependency's own defaults. */
+interface ParentOverlay {
+    /** Key of the dependency inside the parent's values (its directory name). */
+    readonly key: string;
+    /** The parent's effective values record and per-path sources. */
+    readonly values: Record<string, unknown>;
+    readonly sources: ReadonlyMap<string, string>;
+}
+
+/**
+ * Model of a dependency chart under `<parent>/charts/<name>`: the
+ * subchart's own defaults, any helmfile release pointing straight at the
+ * dependency, then — as in Helm — the parent's effective `<name>` subtree
+ * (parent chart defaults + the parent release's helmfile overlay).
+ */
+export function subchartModel(parent: ChartTemplateContext, name: string, stamp: number, environment = 'default'): ChartModel | null {
     const root = path.join(parent.root, 'charts', name);
     if (!fs.existsSync(path.join(root, 'Chart.yaml')) && !fs.existsSync(path.join(root, 'Chart.yml'))) return null;
-    const valuesTree = readYamlTree(path.join(root, 'values.yaml'));
-    return chartModelFor({ root, name, valuesTree, subcharts: [] }, stamp, 'default');
+    const memoKey = `sub:${root}`;
+    let entry = memos.get(memoKey);
+    if (!entry || entry.stamp !== stamp || entry.env !== environment) {
+        const context: ChartTemplateContext = { root, name, valuesTree: readYamlTree(path.join(root, 'values.yaml')), subcharts: [] };
+        const from = mergedValues(parent, environment);
+        entry = { stamp, env: environment, value: buildModel(context, environment, { key: name, values: from.values, sources: from.sources }) };
+        if (memos.size >= MEMO_LIMIT) memos.delete(memos.keys().next().value as string); // evict oldest
+        memos.set(memoKey, entry);
+    }
+    return entry.value;
 }
 
 /* -------------------- building -------------------- */
 
-function buildModel(context: ChartTemplateContext, environment: string): ChartModel {
+function buildModel(context: ChartTemplateContext, environment: string, parent?: ParentOverlay): ChartModel {
     const values: Record<string, unknown> = {};
     const sources = new Map<string, string>();
     const schema = readSchema(context.root);
 
     applyTree(values, sources, context.valuesTree, `${context.name} values.yaml`);
     applyStateOverlay(context.root, values, sources, environment);
+    if (parent) {
+        const overlay = parent.values[parent.key];
+        // A scalar/array under the dependency key cannot merge into the
+        // subchart's map-shaped values; skip that pathological case.
+        if (typeof overlay === 'object' && overlay !== null && !Array.isArray(overlay)) {
+            applyParentOverlay(values, sources, overlay as Record<string, unknown>, [parent.key], parent.sources);
+        }
+    }
 
     return {
         chart: context.name,
@@ -100,8 +136,18 @@ function buildModel(context: ChartTemplateContext, environment: string): ChartMo
         valueAt: segments => valueAt(values, sources, segments),
         elementKeys: segments => elementKeys(values, sources, schema, segments),
         schemaDescriptionAt: segments => schemaAt(schema, segments)?.description ?? null,
+        schemaRejects: segments => schemaRejects(schema, segments),
         files: listFiles(context.root),
     };
+}
+
+/** Chart defaults + helmfile overlay of a context, without building the full model. */
+function mergedValues(context: ChartTemplateContext, environment: string): { values: Record<string, unknown>; sources: Map<string, string> } {
+    const values: Record<string, unknown> = {};
+    const sources = new Map<string, string>();
+    applyTree(values, sources, context.valuesTree, `${context.name} values.yaml`);
+    applyStateOverlay(context.root, values, sources, environment);
+    return { values, sources };
 }
 
 /** Chart defaults from the parsed values.yaml. */
@@ -207,6 +253,26 @@ function overlayValue(values: Record<string, unknown>, sources: Map<string, stri
     sources.set(key, label);
     for (const existing of sources.keys()) {
         if (existing !== key && existing.startsWith(key + '\u001f')) sources.delete(existing);
+    }
+}
+
+/**
+ * Deep-merge the parent's effective `<name>` subtree into the subchart's
+ * values, re-labelling provenance from the parent's source map: a path
+ * `[name, a, b]` in parent space lands at `[a, b]` in subchart space.
+ */
+function applyParentOverlay(values: Record<string, unknown>, sources: Map<string, string>, overlay: Record<string, unknown>, parentSegments: readonly string[], parentSources: ReadonlyMap<string, string>): void {
+    const subSegments = parentSegments.slice(1); // drop the dependency key itself
+    for (const [key, value] of Object.entries(overlay)) {
+        if (value === undefined) continue;
+        const nextParent = [...parentSegments, key];
+        const label = parentSources.get(nextParent.join('\u001f')) ?? 'parent chart values';
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+            sources.set([...subSegments, key].join('\u001f'), label);
+            applyParentOverlay(values, sources, value as Record<string, unknown>, nextParent, parentSources);
+        } else {
+            overlayValue(values, sources, [...subSegments, key], value, label);
+        }
     }
 }
 
@@ -351,6 +417,27 @@ function stepSchema(node: unknown, segment: string): unknown {
     if (hit !== undefined) return hit;
     const additional = record.additionalProperties;
     return typeof additional === 'object' && additional !== null ? additional : null;
+}
+
+/** Whether a schema node would reject a key: only when the parent is an
+ * object that declares `properties` with `additionalProperties: false`
+ * and the key is not among them. */
+function schemaRejects(schema: unknown, segments: readonly string[]): string | null {
+    if (segments.length === 0) return null;
+    let node = schema;
+    for (const segment of segments.slice(0, -1)) {
+        node = stepSchema(node, segment);
+        if (!node) return null;
+    }
+    if (typeof node !== 'object' || node === null) return null;
+    const record = node as Record<string, unknown>;
+    if (record.type === 'array') return null;
+    const properties = record.properties;
+    const last = segments[segments.length - 1];
+    if (typeof properties !== 'object' || properties === null) return null;
+    if (last in (properties as Record<string, unknown>)) return null;
+    if (record.additionalProperties !== false) return null;
+    return `Values key "${segments.join('.')}" is not defined in values.schema.json (additionalProperties: false there)`;
 }
 
 /** Property names a schema allows under a path. */
