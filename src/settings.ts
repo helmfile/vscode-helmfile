@@ -41,6 +41,14 @@ export function chartSupportEnabled(): boolean {
 }
 
 /**
+ * Inline `.Values` hints in chart templates (effective value + source).
+ * `helmfile.chartValueHints: false` turns them off.
+ */
+export function chartValueHintsEnabled(): boolean {
+    return vscode.workspace.getConfiguration('helmfile').get<boolean>('chartValueHints') ?? true;
+}
+
+/**
  * The active Helmfile environment, saved per helmfile project (the
  * directory holding the entry state) like the IntelliJ plugin's
  * project-level setting; unrelated projects in one workspace keep

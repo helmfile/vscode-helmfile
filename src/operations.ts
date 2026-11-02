@@ -5,9 +5,12 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import { EnvironmentService, mutatingCommandsEnabled, settings } from './settings';
-import { environmentNames, isHelmfileName, readSource } from './values';
+import { chartFileOf, chartTemplateContextFor } from './chartContext';
+import { contentStamp, environmentNames, isHelmfileName, readSource } from './values';
 import { detectProject, projectFor } from './project';
 import {
     buildCommand,
@@ -32,6 +35,7 @@ const OPERATION_LABELS: Record<HelmfileOperationKind, string> = {
     destroy: 'Destroy',
 };
 
+const execFileAsync = promisify(execFile);
 const templateViewer = new OutputViewer('template');
 const diffViewer = new OutputViewer('diff');
 
@@ -45,6 +49,29 @@ async function mutatingBlocked(operation: HelmfileOperationKind): Promise<boolea
     );
     if (choice === 'Open Settings') void vscode.commands.executeCommand('workbench.action.openSettings', 'helmfile.enableMutatingCommands');
     return true;
+}
+
+/** Render the chart owning `uri`'s document with `helm template` and show the manifests. */
+export async function renderChartTemplate(uri: vscode.Uri): Promise<void> {
+    const chart = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+    if (!chart) return;
+    await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Helmfile: rendering chart '${chart.name}'…` },
+        async () => {
+            try {
+                const { stdout } = await execFileAsync(settings().helmExecutable, ['template', chart.name, chart.root], {
+                    timeout: 30_000,
+                    maxBuffer: 20 * 1024 * 1024,
+                });
+                const doc = await vscode.workspace.openTextDocument({ content: stdout, language: 'yaml' });
+                await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                channel().appendLine(`helm template ${chart.name} failed: ${message}`);
+                void vscode.window.showErrorMessage(`Helmfile: helm template failed: ${message.slice(0, 300)}`);
+            }
+        },
+    );
 }
 
 /** Tools → Helmfile: Select Environment. */

@@ -12,6 +12,14 @@ class Range {
         return this.start.line === other.start.line && this.start.character === other.start.character
             && this.end.line === other.end.line && this.end.character === other.end.character;
     }
+    intersection(other: Range): Range | undefined {
+        const laterStart = this.start.line > other.start.line || (this.start.line === other.start.line && this.start.character > other.start.character)
+            ? this.start : other.start;
+        const earlierEnd = this.end.line < other.end.line || (this.end.line === other.end.line && this.end.character < other.end.character)
+            ? this.end : other.end;
+        if (laterStart.line > earlierEnd.line || (laterStart.line === earlierEnd.line && laterStart.character > earlierEnd.character)) return undefined;
+        return new Range(laterStart, earlierEnd);
+    }
 }
 class Diagnostic {
     constructor(readonly range: unknown, readonly message: string, readonly severity?: number) {}
@@ -86,6 +94,10 @@ class CodeLens {
     constructor(readonly range: { start: unknown; end: unknown }, command?: { title: string; command: string; arguments?: unknown[] }) {
         this.command = command;
     }
+}
+class InlayHint {
+    tooltip?: unknown;
+    constructor(readonly position: unknown, readonly label: string, readonly kind?: number) {}
 }
 class EventEmitter<T> {
     listeners = new Set<(e: T) => void>();
@@ -201,6 +213,7 @@ export = {
     SignatureInformation,
     ParameterInformation,
     SignatureHelp,
+    InlayHint,
     CompletionItemKind: {
         Text: 0, Method: 1, Function: 2, Constructor: 3, Field: 4, Variable: 5, Class: 6,
         Interface: 7, Module: 8, Property: 9, Unit: 10, Value: 11, Enum: 12, Keyword: 13,
@@ -250,7 +263,7 @@ export = {
             get: (key: string): unknown => {
                 if (key in configOverrides) return configOverrides[key];
                 return section === 'helmfile'
-                    ? ({ helmfileExecutablePath: 'helmfile', helmExecutablePath: 'helm', protectedEnvironments: 'prod.*', disableAutomaticDownloads: false, chartSupport: true } as Record<string, unknown>)[key]
+                    ? ({ helmfileExecutablePath: 'helmfile', helmExecutablePath: 'helm', protectedEnvironments: 'prod.*', disableAutomaticDownloads: false, chartSupport: true, chartValueHints: true } as Record<string, unknown>)[key]
                     : undefined;
             },
             update: async () => {},
@@ -280,6 +293,7 @@ export = {
         registerReferenceProvider: () => ({ dispose: () => {} }),
         registerHoverProvider: () => ({ dispose: () => {} }),
         registerSignatureHelpProvider: () => ({ dispose: () => {} }),
+        registerInlayHintsProvider: () => ({ dispose: () => {} }),
         registerCodeActionsProvider: () => ({ dispose: () => {} }),
         registerCodeLensProvider: () => ({ dispose: () => {} }),
         registerDocumentSemanticTokensProvider: () => ({ dispose: () => {} }),

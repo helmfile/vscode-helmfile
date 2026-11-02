@@ -8,8 +8,9 @@ import { HelmfileCompletionProvider } from './completion';
 import { HelmfileDefinitionProvider, HelmfileReferencesProvider } from './references';
 import { HelmfileHoverProvider } from './hover';
 import { HelmfileSignatureHelpProvider } from './signatureHelp';
+import { HelmfileInlayHintsProvider } from './inlayHints';
 import { HelmfileDiagnostics } from './inspection';
-import { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT, HELMFILE_GOTO_TEMPLATE_PARENT, HELMFILE_FIND_TEMPLATE_USAGES } from './codeLens';
+import { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT, HELMFILE_GOTO_TEMPLATE_PARENT, HELMFILE_FIND_TEMPLATE_USAGES, HELMFILE_RENDER_CHART_TEMPLATE } from './codeLens';
 import { HelmfileSemanticTokensProvider, SEMANTIC_TOKEN_TYPES } from './semanticTokens';
 import { HelmfileDocumentSymbolProvider } from './documentSymbol';
 import { HelmfileFoldingRangeProvider } from './folding';
@@ -19,7 +20,7 @@ import { HelmfileStatusBar } from './statusBar';
 import { ChartSourceService } from './chartNavigation';
 import { repositoryService, type RepositoryQuery } from './repositoryService';
 import { repositoryModel, downloadable, query as repositoryQuery } from './repositories';
-import { disposeOperations, runReleaseOperation, selectEnvironment } from './operations';
+import { disposeOperations, runReleaseOperation, renderChartTemplate, selectEnvironment } from './operations';
 import { detectProject, projectFor } from './project';
 import { channel } from './execution';
 import { scalarPathText, walkAll, type YPair } from './yamlTree';
@@ -68,6 +69,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.languages.registerReferenceProvider(HELMFILE_SELECTOR, references),
         vscode.languages.registerHoverProvider(HELMFILE_SELECTOR, hover),
         vscode.languages.registerSignatureHelpProvider(HELMFILE_SELECTOR, new HelmfileSignatureHelpProvider(), ' ', '(', ','),
+        vscode.languages.registerInlayHintsProvider(HELMFILE_SELECTOR, new HelmfileInlayHintsProvider(env)),
         vscode.languages.registerCodeLensProvider(HELMFILE_SELECTOR, lenses),
         vscode.languages.registerDocumentSemanticTokensProvider(HELMFILE_SELECTOR, new HelmfileSemanticTokensProvider(), new vscode.SemanticTokensLegend(SEMANTIC_TOKEN_TYPES)),
         vscode.languages.registerDocumentSymbolProvider(HELMFILE_SELECTOR, new HelmfileDocumentSymbolProvider()),
@@ -142,6 +144,7 @@ export function activate(context: vscode.ExtensionContext): void {
     };
 
     register(HELMFILE_SELECT_ENVIRONMENT, (uri?: vscode.Uri) => selectEnvironment(env, uri));
+    register(HELMFILE_RENDER_CHART_TEMPLATE, (uri?: vscode.Uri) => renderChartTemplate(uri ?? vscode.window.activeTextEditor?.document.uri as vscode.Uri));
     register('helmfile.selectEnvironmentQuick', () => selectEnvironment(env, vscode.window.activeTextEditor?.document.uri));
     register('helmfile.refreshRepositories', async () => {
         const target = vscode.window.activeTextEditor?.document.uri ?? activeStateUri();

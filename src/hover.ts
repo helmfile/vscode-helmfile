@@ -2,6 +2,7 @@
  * Hover documentation, ported from HelmfileDocumentationProvider.
  */
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
 import { TemplateScanner } from './templateScanner';
 import * as path from 'node:path';
 import { chartBuiltinOf, chartFileOf, chartTemplateContextFor, chartTemplateDetected, CHART_BUILTIN_TOKEN, CHART_ROOT_PATHS, type ChartTemplateContext } from './chartContext';
@@ -19,6 +20,9 @@ import { evaluateExpressionAt, type EvaluatedExpression } from './environmentInf
 
 /** Identifiers inside actions that carry documentation. */
 const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/g;
+
+/** `.Files.Get "…"` / `.Files.Glob "…"` literals. */
+const FILES_CALL = /\$?\.Files\.(?:Get|GetBytes|Glob|Lines)\s*"((?:[^"\\]|\\.)*)"/g;
 
 function builtinPathAt(text: string, offset: number): { text: string; start: number; end: number } | null {
     for (const match of matchAll(CHART_BUILTIN_TOKEN, text)) {
@@ -144,6 +148,8 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
             }
             // `.Values.x` tokens reach here: fall through to value resolution.
         }
+        const filesHover = chartFilesHover(text, offset, context);
+        if (filesHover) return filesHover;
         const valuePath = valuePathAt(text, offset);
         if (valuePath) {
             const model = chartModelFor(context, contentStamp(), this.env.get());
@@ -206,6 +212,51 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
         content.appendCodeblock(define.body || '(empty)', 'go-template');
         return new vscode.Hover(content, offsetRange(text, call.start, call.end));
     }
+}
+
+/** Hover for `.Files.Get "path"` / `.Files.Glob "pattern"` literals: a
+ * head preview of the file (or the matched files) under the chart root. */
+function chartFilesHover(text: string, offset: number, context: ChartTemplateContext): vscode.Hover | null {
+    for (const match of matchAll(FILES_CALL, text)) {
+        const start = match.index ?? 0;
+        const end = start + match[0].length;
+        if (offset < start || offset > end) continue;
+        const literal = match[1];
+        const range = offsetRange(text, start, end);
+        const content = new vscode.MarkdownString();
+        if (/\.Files\.Glob\s*$/.test(match[0].slice(0, match[0].length - literal.length - 2))) {
+            const pattern = globToRegExp(literal);
+            const matches = chartModelFor(context, contentStamp(), 'default').files.filter(file => pattern.test(file)).slice(0, 20);
+            content.appendMarkdown(`**${literal}** — ${matches.length} file(s) under \`${path.basename(context.root)}\``);
+            if (matches.length) content.appendCodeblock(matches.join('\n'), 'text');
+            return new vscode.Hover(content, range);
+        }
+        const absolute = path.join(context.root, literal);
+        if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) {
+            content.appendMarkdown(`**${literal}** — not found under the chart root.`);
+            return new vscode.Hover(content, range);
+        }
+        const body = fs.readFileSync(absolute, 'utf8');
+        const head = body.length > 500 ? `${body.slice(0, 500)}\n…` : body;
+        content.appendMarkdown(`**${literal}** — file under \`${path.basename(context.root)}\``);
+        content.appendCodeblock(head, path.extname(literal) === '.json' ? 'json' : 'yaml');
+        return new vscode.Hover(content, range);
+    }
+    return null;
+}
+
+/** Chart-file glob patterns use `*` / `**` / `?`. */
+function globToRegExp(glob: string): RegExp {
+    let source = '';
+    for (let index = 0; index < glob.length; index++) {
+        const ch = glob[index];
+        if (ch === '*') {
+            if (glob[index + 1] === '*') { source += '.*'; index++; }
+            else source += '[^/]*';
+        } else if (ch === '?') source += '[^/]';
+        else source += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+    return new RegExp(`^${source}$`);
 }
 
 function computedValueMarkdown(evaluated: EvaluatedExpression, environment: string): vscode.MarkdownString {

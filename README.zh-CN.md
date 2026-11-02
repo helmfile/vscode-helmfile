@@ -173,11 +173,20 @@ Host),自带 `examples/` 下的示例状态文件。
   `chart:` 指向该目录的 helmfile release 的 values 文件、内联 `values:` 与
   `set:` 项。每项补全会标明值来自哪个来源。
 - `.Subcharts.<name>.Values.` 基于 `charts/` 下依赖自身的 `values.yaml` 补全与预览。
-- `.Files.Get "…"` / `.Files.Glob "…"` 补全 chart 根下的文件路径。
+- `.Files.Get "…"` / `.Files.Glob "…"` 补全 chart 根下的文件路径;悬停引号内
+  的路径可预览文件内容(`Glob` 则列出匹配文件)。
 - `range` / `with` 块内,相对路径 `.field` 基于被迭代的值补全 —— 遍历对象列表时
   直接补全元素键。
 - `include "…"` / `template "…"` 跨 `templates/` 全部文件补全命名模板
-  (`define`)名。
+  (`define`)名;调用了不存在的命名模板会给出警告,并提供 **Create define**
+  快速修复 —— 在 `_helpers.tpl` 末尾追加骨架(文件不存在时一并创建)。
+- 行内值提示(Inlay Hints)直接在 `.Values` 引用后显示生效值,悬停可见值的
+  来源(chart `values.yaml`、覆盖文件或 `set:` 条目);用
+  `helmfile.chartValueHints: false` 关闭。
+- chart 模板文件的大纲展示 YAML 结构(模板动作已被遮蔽,`{{ .Values.x }}`
+  不会破坏键名),并附带 `define` 声明符号。
+- **▶ Render Chart Template** Code Lens 对 chart 执行 `helm template`,在侧边
+  编辑器中展示渲染后的清单。
 - Hover 展示内置变量文档、预览生效值(含来源与 `values.schema.json` 描述)、
   展开 `include` 背后的 `define` 内容,以及 `range` 元素字段的解析结果。
 - 转到定义 / 查找引用在 `include`/`template` 调用与 `define` 声明之间跳转;
@@ -208,6 +217,7 @@ chart。chart 内的 Helmfile 状态文件仍按状态文件处理。
 | `helmfile.protectedEnvironments` | `prod.*` | 受保护环境的正则(全匹配) |
 | `helmfile.disableAutomaticDownloads` | `false` | 禁用仓库元数据下载 |
 | `helmfile.chartSupport` | `true` | Helm chart `templates/` 文件的 chart 感知能力 |
+| `helmfile.chartValueHints` | `true` | chart 模板中显示 `.Values` 生效值的行内提示 |
 | `helmfile.enableMutatingCommands` | `false` | 启用变更类命令(Apply/Destroy)及其 CodeLens;未启用时隐藏并拒绝执行 |
 
 HTTP(S) 访问遵循 VSCode 的 `http.proxy` 设置。

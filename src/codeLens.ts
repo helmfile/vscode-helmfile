@@ -10,10 +10,13 @@ import type { SourceFile } from './values';
 import { isDeclaration as isTemplateDeclaration, inheritanceScalars } from './templates';
 import { isRelease } from './releaseTarget';
 import { EnvironmentService, mutatingCommandsEnabled } from './settings';
+import { chartFileOf, chartTemplateContextFor } from './chartContext';
+import { contentStamp } from './values';
 
 export const HELMFILE_SELECT_ENVIRONMENT = 'helmfile.selectEnvironment';
 export const HELMFILE_GOTO_TEMPLATE_PARENT = 'helmfile.gotoTemplateParent';
 export const HELMFILE_FIND_TEMPLATE_USAGES = 'helmfile.findTemplateUsages';
+export const HELMFILE_RENDER_CHART_TEMPLATE = 'helmfile.renderChartTemplate';
 
 const RELEASE_OPERATIONS: readonly { command: string; icon: string; label: string }[] = [
     { command: 'helmfile.templateRelease', icon: 'preview', label: 'Template' },
@@ -33,6 +36,18 @@ export class HelmfileCodeLensProvider implements vscode.CodeLensProvider {
     }
 
     provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+        const chartTemplate = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
+        if (chartTemplate) {
+            // Chart template files: a single render action instead of state lenses.
+            const title = `$(play) Render Chart Template (helm template ${chartTemplate.name})`;
+            const command = {
+                title,
+                command: HELMFILE_RENDER_CHART_TEMPLATE,
+                arguments: [document.uri],
+                tooltip: 'Run helm template on this chart and show the rendered manifests',
+            };
+            return [new vscode.CodeLens(document.lineAt(0).range, command)];
+        }
         const text = document.getText();
         const tree = parseTree(text);
         const source: SourceFile = { uri: document.uri, text, tree };

@@ -9,7 +9,8 @@
  * - missing values file  → create it (with parent directories)
  */
 import * as vscode from 'vscode';
-import { HELMFILE_DIAGNOSTIC_SOURCE, missingFiles, outdatedVersions, unknownFields } from './inspection';
+import * as fs from 'node:fs';
+import { HELMFILE_DIAGNOSTIC_SOURCE, missingChartDefines, missingFiles, outdatedVersions, unknownFields } from './inspection';
 
 export class HelmfileCodeActionProvider implements vscode.CodeActionProvider {
     provideCodeActions(document: vscode.TextDocument, range: vscode.Range, context: vscode.CodeActionContext): vscode.CodeAction[] {
@@ -61,6 +62,14 @@ export class HelmfileCodeActionProvider implements vscode.CodeActionProvider {
                     action.command = { command: 'vscode.open', title: 'Open created file', arguments: [vscode.Uri.file(missing)] };
                     actions.push(action);
                 }
+                const define = missingChartDefines.get(diagnostic);
+                if (define) {
+                    const action = new vscode.CodeAction(`Create define "${define.name}"`, vscode.CodeActionKind.QuickFix);
+                    action.edit = createDefineEdit(define.name, define.helpers);
+                    action.command = { command: 'vscode.open', title: 'Open helpers file', arguments: [vscode.Uri.file(define.helpers)] };
+                    action.isPreferred = true;
+                    actions.push(action);
+                }
             }
         }
         if (ours.some(diagnostic => diagnostic.code === 'helmfile.refreshRepositories')) {
@@ -75,5 +84,24 @@ export class HelmfileCodeActionProvider implements vscode.CodeActionProvider {
 function createFileEdit(uri: vscode.Uri): vscode.WorkspaceEdit {
     const edit = new vscode.WorkspaceEdit();
     edit.createFile(uri, { overwrite: false, ignoreIfExists: true });
+    return edit;
+}
+
+/** Edit creating a `define` skeleton, appended to `_helpers.tpl` (created when missing). */
+function createDefineEdit(name: string, helpers: string): vscode.WorkspaceEdit {
+    const skeleton = `{{- define "${name}" -}}\n\n{{- end -}}\n`;
+    const edit = new vscode.WorkspaceEdit();
+    const uri = vscode.Uri.file(helpers);
+    if (fs.existsSync(helpers)) {
+        const body = fs.readFileSync(helpers, 'utf8');
+        const lines = body.split('\n');
+        const last = Math.max(0, lines.length - 1);
+        const position = new vscode.Position(last, lines[last]?.length ?? 0);
+        const separator = body.length > 0 && !body.endsWith('\n') ? '\n' : '';
+        edit.insert(uri, position, `${separator}${skeleton}`);
+    } else {
+        edit.createFile(uri, { overwrite: false, ignoreIfExists: true });
+        edit.insert(uri, new vscode.Position(0, 0), `{{- define "${name}" -}}\n\n{{- end -}}\n`);
+    }
     return edit;
 }

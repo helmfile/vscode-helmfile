@@ -208,12 +208,25 @@ chart-aware assistance inside `<chart>/templates/` files
 - `.Subcharts.<name>.Values.` completes and previews keys from the
   dependency's own `values.yaml` in `charts/`.
 - `.Files.Get "…"` / `.Files.Glob "…"` complete file paths under the
-  chart root.
+  chart root, and hovering the quoted path previews the file's content
+  (or, for `Glob`, the list of matching files).
 - Inside `range` / `with` blocks, relative `.field` paths complete
   against the iterated value — including element keys when ranging over
   a list of objects.
 - `include "…"` / `template "…"` complete named template (`define`)
-  names across all files under `templates/`.
+  names across all files under `templates/`, and calling a name with no
+  matching `define` produces a warning with a **Create define** quick
+  fix that appends a skeleton to `_helpers.tpl` (creating the file when
+  missing).
+- Inline value hints show the effective value of `.Values` references
+  right after the code, with a tooltip naming the source (`chart
+  values.yaml`, overlay file, `set:` entry). Disable with
+  `helmfile.chartValueHints: false`.
+- The outline of a chart template file shows its YAML structure (with
+  template actions masked, so `{{ .Values.x }}` never breaks key names)
+  followed by `define` declarations.
+- A **▶ Render Chart Template** code lens runs `helm template` on the
+  chart and shows the rendered manifests in a side-by-side editor.
 - Hover documents built-in variables, previews effective values (with
   the providing source and `values.schema.json` descriptions), shows the
   body of a `define` behind an `include` call, and resolves fields of
@@ -253,6 +266,7 @@ keep their state treatment.
 | `helmfile.protectedEnvironments` | `prod.*` | Regex (full match) of protected environments |
 | `helmfile.disableAutomaticDownloads` | `false` | Disable repository metadata downloads |
 | `helmfile.chartSupport` | `true` | Chart-aware assistance inside Helm chart `templates/` files |
+| `helmfile.chartValueHints` | `true` | Inline hints showing effective `.Values` in chart templates |
 | `helmfile.enableMutatingCommands` | `false` | Enable the mutating commands (Apply/Destroy) and their code lenses; hidden and refused until enabled |
 
 HTTP(S) access honors VSCode's `http.proxy` setting.

@@ -1503,8 +1503,90 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     const noSig = sigDoc('{{ .Values.image ', 16);
     check('no signature help outside calls', noSig === null, JSON.stringify(noSig));
 
+    // ---- UX round 2: files hover, missing-define, quick fix, hints, outline, lens. ----
+    const filesHover = hoverAt('{{ .Files.Get "values.yaml" }}', 15);
+    check('.Files.Get hover shows file content', filesHover != null && hoverText(filesHover).includes('file under') && hoverText(filesHover).includes('nginx'), hoverText(filesHover));
+    const globHover = hoverAt('{{ .Files.Glob "*.yaml" }}', 15);
+    check('.Files.Glob hover lists matches', globHover != null && hoverText(globHover).includes('values.yaml'), hoverText(globHover));
+    const missingFileHover = hoverAt('{{ .Files.Get "nope.yaml" }}', 15);
+    check('.Files.Get hover flags missing path', missingFileHover != null && hoverText(missingFileHover).includes('not found'), hoverText(missingFileHover));
+
+    captured.length = 0;
+    diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => '{{ include "mychart.nothere" . }}' } as never);
+    check('missing define warns', captured.length === 1 && String((captured[0] as { message: string }).message).includes('mychart.nothere'), JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    const defineDiagnostic = captured[0] as never;
+    captured.length = 0;
+    diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => '{{ include "mychart.name" . }}' } as never);
+    check('defined include does not warn', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    captured.length = 0;
+    diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => '{{ include "mychart.nothere" . }}\n{{ include "mychart.nothere" . }}' } as never);
+    check('missing define warns once per name', captured.length === 1, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
+    const { HelmfileCodeActionProvider } = require('../src/codeActions') as typeof import('../src/codeActions');
+    const actions = new HelmfileCodeActionProvider().provideCodeActions(
+        mkChartDoc('{{ include "mychart.nothere" . }}') as never,
+        (defineDiagnostic as { range: never }).range,
+        { diagnostics: [defineDiagnostic] } as never,
+    ) as { title: string; isPreferred?: boolean }[];
+    check('missing define quick fix offered', actions.length === 1 && actions[0].title === 'Create define "mychart.nothere"' && actions[0].isPreferred === true, JSON.stringify(actions.map(a => a.title)));
+
+    const { HelmfileInlayHintsProvider } = require('../src/inlayHints') as typeof import('../src/inlayHints');
+    const hintsProvider = new HelmfileInlayHintsProvider(env);
+    const hintDoc = mkChartDoc('image: {{ .Values.image.tag }}\nreplicas: {{ $.Values.replicas }}\n');
+    const hints = hintsProvider.provideInlayHints(hintDoc as never, { start: new vscode.Position(0, 0), end: new vscode.Position(2, 0) } as never) as { label: string; tooltip: unknown }[];
+    check('inlay hint for .Values reference', hints.length === 2 && hints[0].label === '= latest', JSON.stringify(hints.map(h => h.label)));
+    const hintTooltip = hints[0] && hints[0].tooltip as { value: string };
+    check('inlay hint tooltip names source', hintTooltip != null && hintTooltip.value.includes('values.yaml'), hintTooltip ? hintTooltip.value : 'null');
+    check('inlay hints respect range', hintsProvider.provideInlayHints(hintDoc as never, { start: new vscode.Position(0, 30), end: new vscode.Position(1, 0) } as never).length === 0);
+    (vscode as unknown as { configOverrides: Record<string, unknown> }).configOverrides.chartValueHints = false;
+    check('inlay hints setting disables provider', hintsProvider.provideInlayHints(hintDoc as never, { start: new vscode.Position(0, 0), end: new vscode.Position(2, 0) } as never).length === 0);
+    (vscode as unknown as { configOverrides: Record<string, unknown> }).configOverrides.chartValueHints = true;
+
+    const outlineText = [
+        '{{- if .Values.enabled }}',
+        'apiVersion: apps/v1',
+        'kind: Deployment',
+        'metadata:',
+        '  name: {{ .Release.Name }}',
+        'spec:',
+        '  replicas: {{ .Values.replicas }}',
+        '  template:',
+        '    spec:',
+        '      containers:',
+        '        - ports:',
+        '          - 80',
+        '{{- end }}',
+    ].join('\n');
+    const outlineDoc = mkChartDoc(outlineText);
+    (outlineDoc as { lineAt?: unknown }).lineAt = (line: number) => {
+        const lines = outlineText.split('\n');
+        const content = lines[Math.min(line, lines.length - 1)] ?? '';
+        return { range: { start: new vscode.Position(line, 0), end: new vscode.Position(line, content.length) }, text: content };
+    };
+    const { HelmfileDocumentSymbolProvider } = require("../src/documentSymbol") as typeof import("../src/documentSymbol");
+    const outlineProvider = new HelmfileDocumentSymbolProvider();
+    const outline = outlineProvider.provideDocumentSymbols(outlineDoc as never) as { name: string; detail: string; children?: { name: string; children?: unknown }[] }[];
+    const outlineNames: string[] = [];
+    const walkSymbols = (symbols: { name: string; children?: unknown[] }[]): void => {
+        for (const symbol of symbols) {
+            outlineNames.push(symbol.name);
+            walkSymbols((symbol.children ?? []) as { name: string; children?: unknown[] }[]);
+        }
+    };
+    walkSymbols(outline);
+    check('chart template outline shows YAML keys', outlineNames.includes('metadata') && outlineNames.includes('replicas'), JSON.stringify(outlineNames));
+    check('outline hides state symbols in chart files', !outlineNames.includes('app'), JSON.stringify(outlineNames));
+    const metadataSymbol = outline.find(s => s.name === 'metadata');
+    check('outline nests children', metadataSymbol != null && Array.isArray(metadataSymbol.children) && metadataSymbol.children.some(c => c.name === 'name'), JSON.stringify(metadataSymbol && metadataSymbol.children));
+    check('outline keeps defines after YAML keys', outlineProvider.provideDocumentSymbols(mkChartDoc(fs.readFileSync(helpers, 'utf8')) as never).some(s => s.detail === 'define'));
+
+    const { HelmfileCodeLensProvider } = require('../src/codeLens') as typeof import('../src/codeLens');
+    const lensDoc = mkChartDoc('apiVersion: apps/v1\n');
+    (lensDoc as { lineAt?: unknown }).lineAt = () => ({ range: { start: new vscode.Position(0, 0), end: new vscode.Position(0, 17) } });
+    const lenses = new HelmfileCodeLensProvider(env).provideCodeLenses(lensDoc as never) as { command?: { command: string; title: string } }[];
+    check('render code lens on chart template', lenses.length === 1 && lenses[0].command != null && lenses[0].command.command === 'helmfile.renderChartTemplate' && lenses[0].command.title.includes('mychart'), JSON.stringify(lenses.map(l => l.command && l.command.title)));
+
     // ---- Document symbols: define outline. ----
-    const { HelmfileDocumentSymbolProvider } = require('../src/documentSymbol') as typeof import('../src/documentSymbol');
     const symbolsProvider = new HelmfileDocumentSymbolProvider();
     const helperSymbols = symbolsProvider.provideDocumentSymbols(mkChartDoc(fs.readFileSync(helpers, 'utf8')) as never) as { name: string; detail: string }[];
     check('outline shows defines', helperSymbols.some(s => s.name === 'mychart.name' && s.detail === 'define'), JSON.stringify(helperSymbols));

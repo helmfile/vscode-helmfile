@@ -20,6 +20,7 @@ async function main(): Promise<void> {
         log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok || !detail ? '' : ` — ${detail}`}`);
         if (!ok) failures.push(name);
     };
+    const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
     // 0. Language assignment: the file must be claimed by our 'helmfile' language.
     check('languageId=helmfile', doc.languageId === 'helmfile', `got '${doc.languageId}'`);
@@ -216,6 +217,29 @@ async function main(): Promise<void> {
         const sigHelp = (await vscode.commands.executeCommand('vscode.executeSignatureHelpProvider', chartUri, cdoc.positionAt(cdoc.getText().indexOf('include "demo.name" ') + 'include "demo.name" '.length))) as vscode.SignatureHelp | undefined;
         check('signature help for include', (sigHelp?.signatures?.length ?? 0) > 0 && String(sigHelp!.signatures[0].label).startsWith('include('), `sig=${sigHelp?.signatures?.[0]?.label ?? 'none'}`);
         void helpersDoc;
+
+        // UX round 2: inlay hints, YAML outline, render lens, missing-define fix.
+        const inlayHints = (await vscode.commands.executeCommand('vscode.executeInlayHintProvider', chartUri, new vscode.Range(0, 0, cdoc.lineCount, 0))) as vscode.InlayHint[] | undefined;
+        const hintLabels = (inlayHints ?? []).map(h => typeof h.label === 'string' ? h.label : String(h.label));
+        check('inlay hints show effective values', hintLabels.some(l => l.includes('3') || l.includes('nginx')), `hints=${JSON.stringify(hintLabels)}`);
+
+        const chartSymbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', chartUri);
+        const chartSymbolNames = (chartSymbols ?? []).map(s => s.name);
+        check('chart template outline shows YAML keys', chartSymbolNames.includes('apiVersion') && chartSymbolNames.includes('kind'), JSON.stringify(chartSymbolNames));
+
+        const chartLenses = (await vscode.commands.executeCommand('vscode.executeCodeLensProvider', chartUri)) as vscode.CodeLens[];
+        check('render chart template lens', (chartLenses ?? []).some(l => l.command?.command === 'helmfile.renderChartTemplate'), `lenses=${JSON.stringify(chartLenses?.map(l => l.command?.command))}`);
+
+        const brokenUri = vscode.Uri.file(path.join(chartWs, 'charts', 'demo', 'templates', 'broken.yaml'));
+        fs2.writeFileSync(brokenUri.fsPath, 'note: {{ include "demo.missing" . }}\n');
+        const brokenDoc = await vscode.workspace.openTextDocument(brokenUri);
+        await sleep(1200);
+        const brokenDiags = vscode.languages.getDiagnostics().filter(([uri]) => uri.toString() === brokenUri.toString());
+        const missingDiags = (brokenDiags[0]?.[1] ?? []).filter(d => d.source === 'helmfile');
+        check('missing define diagnostic', missingDiags.some(d => d.message.includes('demo.missing')), JSON.stringify(missingDiags.map(d => d.message)));
+        const brokenActions = (await vscode.commands.executeCommand('vscode.executeCodeActionProvider', brokenUri, new vscode.Range(0, 20, 0, 24))) as vscode.CodeAction[];
+        check('missing define quick fix', (brokenActions ?? []).some(a => a.title === 'Create define "demo.missing"'), JSON.stringify(brokenActions?.map(a => a.title)));
+        void brokenDoc;
     } finally {
         fs2.rmSync(chartWs, { recursive: true, force: true });
     }

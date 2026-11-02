@@ -115,6 +115,11 @@
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Chart-aware assistance for files under `<chart>/templates/`: Helm built-in variables, chart `values.yaml` keys, `values.schema.json` descriptions, named-template navigation and snippets. Turn off to keep only generic Go template help."
+                },
+                "helmfile.chartValueHints": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Inline hints in chart template files showing the effective value of `.Values` references (chart defaults overlaid with the helmfile release values), with a tooltip describing where the value comes from."
                 }
             }
         },
@@ -122,6 +127,11 @@
             {
                 "command": "helmfile.selectEnvironment",
                 "title": "Helmfile: Select Environment",
+                "category": "Helmfile"
+            },
+            {
+                "command": "helmfile.renderChartTemplate",
+                "title": "Helmfile: Render Chart Template",
                 "category": "Helmfile"
             },
             {

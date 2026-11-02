@@ -7,7 +7,8 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
-import { chartFileOf, chartTemplateDetected } from './chartContext';
+import { chartFileOf, chartTemplateContextFor, chartTemplateDetected, type ChartTemplateContext } from './chartContext';
+import { chartDefinesFor } from './chartDefines';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
 import { contentStamp, isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
@@ -70,6 +71,8 @@ export class HelmfileDiagnostics implements vscode.Disposable {
         // Chart template files are Helm templates, not Helmfile state:
         // only template/YAML checks apply.
         if (chartTemplateDetected(chartFileOf(document.uri), contentStamp())) {
+            const chartContext = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
+            if (chartContext) missingDefineDiagnostics(document, chartContext, diagnostics);
             this.collection.set(document.uri, diagnostics);
             return;
         }
@@ -464,4 +467,35 @@ function diagnosticAt(source: SourceFile, start: number, end: number, message: s
     const diagnostic = new vscode.Diagnostic(offsetRange(source.text, start, end), message, severity);
     diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
     return diagnostic;
+}
+
+/** Quick-fix payload for missing-define diagnostics: define name + helpers file. */
+export const missingChartDefines = new WeakMap<vscode.Diagnostic, { name: string; helpers: string }>();
+
+const INCLUDE_NAME = /\b(?:include|template)\s+"((?:[^"\\]|\\.)*)"/g;
+
+/** Warn about `include "x"` / `template "x"` calls with no matching `define`. */
+function missingDefineDiagnostics(document: vscode.TextDocument, context: ChartTemplateContext, diagnostics: vscode.Diagnostic[]): void {
+    const text = document.getText();
+    const defines = new Set(chartDefinesFor(context, contentStamp(), { file: document.uri.fsPath, text }).map(define => define.name));
+    const warned = new Set<string>();
+    for (const action of TemplateScanner.scan(text)) {
+        if (!action.closed) continue; // still being typed
+        const body = text.slice(action.bodyStart, action.bodyEnd);
+        INCLUDE_NAME.lastIndex = 0;
+        for (const match of body.matchAll(INCLUDE_NAME)) {
+            const name = match[1];
+            if (name.length === 0 || defines.has(name) || warned.has(name)) continue;
+            warned.add(name);
+            const literalStart = action.bodyStart + (match.index ?? 0) + match[0].indexOf('"');
+            const diagnostic = new vscode.Diagnostic(
+                offsetRange(text, literalStart, literalStart + name.length + 2),
+                `Named template "${name}" is not defined in this chart`,
+                vscode.DiagnosticSeverity.Warning,
+            );
+            diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+            missingChartDefines.set(diagnostic, { name, helpers: path.join(context.root, 'templates', '_helpers.tpl') });
+            diagnostics.push(diagnostic);
+        }
+    }
 }
