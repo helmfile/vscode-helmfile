@@ -16,7 +16,7 @@ Download the latest `vscode-helmfile-<version>.vsix` from
 [Releases](https://github.com/helmfile/vscode-helmfile/releases), then:
 
 ```bash
-code --install-extension vscode-helmfile-0.2.1.vsix --force
+code --install-extension vscode-helmfile-0.3.0.vsix --force
 ```
 
 `--force` upgrades an already-installed older version. Reload the window
