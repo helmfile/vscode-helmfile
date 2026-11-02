@@ -200,10 +200,34 @@ chart-aware assistance inside `<chart>/templates/` files
   checks (repositories, unknown fields, missing files) stay silent.
 - Completion offers Helm's built-in variables (`.Chart.Name`,
   `.Release.Namespace`, `.Capabilities.KubeVersion`, `.Files.Get`, …),
-  subchart names from `charts/`, and `.Values` keys from the chart's own
-  `values.yaml`.
-- Hover documents built-in variables and shows a key's chart default from
-  `values.yaml`.
+  subchart names from `charts/`, and `.Values` keys resolved against the
+  chart's **effective values**: the chart's own `values.yaml`, overlaid
+  with the values files, inline `values:` mappings and `set:` entries of
+  every helmfile release whose `chart:` points at this directory. Each
+  completion shows which source provided the value.
+- `.Subcharts.<name>.Values.` completes and previews keys from the
+  dependency's own `values.yaml` in `charts/`.
+- `.Files.Get "…"` / `.Files.Glob "…"` complete file paths under the
+  chart root.
+- Inside `range` / `with` blocks, relative `.field` paths complete
+  against the iterated value — including element keys when ranging over
+  a list of objects.
+- `include "…"` / `template "…"` complete named template (`define`)
+  names across all files under `templates/`.
+- Hover documents built-in variables, previews effective values (with
+  the providing source and `values.schema.json` descriptions), shows the
+  body of a `define` behind an `include` call, and resolves fields of
+  `range` elements.
+- Go-to-definition and find-references navigate between `include` /
+  `template` calls and their `define` declarations; the outline shows
+  `define` declarations as symbols.
+- Signature help shows catalog function parameters while typing
+  space-separated calls (`include "name" `), and snippet completions
+  cover `range` / `with` / `if` / `include` / `define` / `block`.
+
+Chart assistance can be switched off with `helmfile.chartSupport: false`;
+YAML/template syntax checking stays on. Opening a workspace that only
+contains charts (no helmfile state) also activates the extension.
 
 A directory is treated as a chart when it (or an ancestor, up to 16 levels)
 contains `Chart.yaml` / `Chart.yml`. Helmfile state files inside a chart
@@ -228,6 +252,7 @@ keep their state treatment.
 | `helmfile.helmExecutablePath` | `helm` | Path to `helm` (chart source browsing) |
 | `helmfile.protectedEnvironments` | `prod.*` | Regex (full match) of protected environments |
 | `helmfile.disableAutomaticDownloads` | `false` | Disable repository metadata downloads |
+| `helmfile.chartSupport` | `true` | Chart-aware assistance inside Helm chart `templates/` files |
 | `helmfile.enableMutatingCommands` | `false` | Enable the mutating commands (Apply/Destroy) and their code lenses; hidden and refused until enabled |
 
 HTTP(S) access honors VSCode's `http.proxy` setting.

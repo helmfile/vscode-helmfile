@@ -4,7 +4,9 @@
  */
 import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
-import { chartFileOf, chartTemplateContextFor } from './chartContext';
+import { chartFileOf, chartTemplateContextFor, chartTemplateDetected } from './chartContext';
+import { chartCallsFor, chartDefinesFor, templateCallAt } from './chartDefines';
+import type { ChartTemplateContext } from './chartContext';
 import { offsetRange } from './position';
 import { nodeAt, pairKeyAt, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
 import { allDefinitions, contentStamp, isHelmfileName, readSource, resolveValueFiles, valuesKeyPath, type SourceFile, type ValuesDefinition } from './values';
@@ -60,9 +62,18 @@ export class HelmfileDefinitionProvider implements vscode.DefinitionProvider {
         const offset = document.offsetAt(position);
         const uri = document.uri;
 
-        // Chart template files: values live in the chart's values.yaml, not
-        // the Helmfile state (which may sit above the chart).
-        if (chartTemplateContextFor(chartFileOf(uri), contentStamp())) return null;
+        // Chart template files: `include "name"` jumps to its `define`.
+        // Values live in the chart's values.yaml, not the Helmfile state
+        // (which may sit above the chart).
+        const chartTemplate = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        if (chartTemplate) {
+            const call = templateCallAt(text, offset);
+            if (!call) return null;
+            const define = chartDefinesFor(chartTemplate, contentStamp(), { file: uri.fsPath, text })
+                .find(candidate => candidate.name === call.name);
+            return define ? locationAt(define.file, define.start) : null;
+        }
+        if (chartTemplateDetected(chartFileOf(uri), contentStamp())) return null;
 
         // 1. Values paths inside Go template actions.
         const valuePath = valuePathAt(text, offset);
@@ -103,10 +114,14 @@ export class HelmfileReferencesProvider implements vscode.ReferenceProvider {
         const uri = document.uri;
         const offset = document.offsetAt(position);
         const text = document.getText();
-        const source: SourceFile = { uri, text, tree: parseTree(text) };
 
-        // Chart template files: no Helmfile state navigation.
-        if (chartTemplateContextFor(chartFileOf(uri), contentStamp())) return [];
+        // Chart template files: references for named templates — on an
+        // `include`/`template` name or on the `define` declaration itself.
+        const chartTemplate = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        if (chartTemplate) return chartTemplateReferences(uri.fsPath, text, offset, chartTemplate);
+        if (chartTemplateDetected(chartFileOf(uri), contentStamp())) return [];
+
+        const source: SourceFile = { uri, text, tree: parseTree(text) };
 
         // Repository name declaration → chart usages.
         const key = pairKeyAt(source.tree, offset);
@@ -401,4 +416,54 @@ function quoted(text: string, start: number): boolean {
 
 function unique(values: string[]): string[] {
     return [...new Set(values)];
+}
+
+/**
+ * Named-template references inside a chart: on an `include`/`template`
+ * name or on the `define` declaration itself, every declaration and call
+ * site of that template across the chart's template files.
+ */
+export function chartTemplateReferences(currentFile: string, text: string, offset: number, context: ChartTemplateContext): vscode.Location[] {
+    const stamp = contentStamp();
+    const current = { file: currentFile, text };
+    const target = templateCallAt(text, offset)?.name
+        ?? declarationNameAt(chartDefinesFor(context, stamp, current), currentFile, text, offset);
+    if (!target) return [];
+    const locations: vscode.Location[] = [];
+    for (const define of chartDefinesFor(context, stamp, current)) {
+        if (define.name === target) {
+            const location = locationAt(define.file, define.start);
+            if (location) locations.push(location);
+        }
+    }
+    for (const call of chartCallsFor(context, stamp, current)) {
+        if (call.name !== target) continue;
+        const location = locationAt(call.file, call.start);
+        if (location) locations.push(location);
+    }
+    return locations.filter((location, index) => locations.findIndex(other => other.uri.toString() === location.uri.toString() && other.range.isEqual(location.range)) === index);
+}
+
+/** Location of an offset in a file, preferring open documents via readSource. */
+function locationAt(file: string, offset: number): vscode.Location | null {
+    const text = readSource(vscode.Uri.file(file))?.text;
+    if (text === undefined) return null;
+    const before = text.slice(0, offset);
+    const line = (before.match(/\n/g) ?? []).length;
+    const character = offset - (before.lastIndexOf('\n') + 1);
+    return new vscode.Location(vscode.Uri.file(file), new vscode.Position(line, character));
+}
+
+/** Name of the `define` whose quoted name literal contains `offset`, if any. */
+function declarationNameAt(defines: readonly { name: string; file: string; start: number }[], currentFile: string, text: string, offset: number): string | null {
+    for (const define of defines) {
+        if (define.file !== currentFile) continue;
+        if (offset < define.start || offset > define.start + 200) continue;
+        const match = /"((?:[^"\\]|\\.)*)"/.exec(text.slice(define.start, define.start + 200));
+        if (!match) continue;
+        const start = define.start + (match.index ?? 0) + 1;
+        const end = start + match[1].length;
+        if (offset >= start - 1 && offset <= end + 1) return define.name;
+    }
+    return null;
 }

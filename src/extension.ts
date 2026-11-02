@@ -7,6 +7,7 @@ import { bumpContentVersion, closeOpenDocument, isHelmfileName, readSource, setO
 import { HelmfileCompletionProvider } from './completion';
 import { HelmfileDefinitionProvider, HelmfileReferencesProvider } from './references';
 import { HelmfileHoverProvider } from './hover';
+import { HelmfileSignatureHelpProvider } from './signatureHelp';
 import { HelmfileDiagnostics } from './inspection';
 import { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT, HELMFILE_GOTO_TEMPLATE_PARENT, HELMFILE_FIND_TEMPLATE_USAGES } from './codeLens';
 import { HelmfileSemanticTokensProvider, SEMANTIC_TOKEN_TYPES } from './semanticTokens';
@@ -62,10 +63,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Language providers.
     context.subscriptions.push(
-        vscode.languages.registerCompletionItemProvider(HELMFILE_SELECTOR, completion, '.', '/', ' '),
+        vscode.languages.registerCompletionItemProvider(HELMFILE_SELECTOR, completion, '.', '/', ' ', '"'),
         vscode.languages.registerDefinitionProvider(HELMFILE_SELECTOR, definition),
         vscode.languages.registerReferenceProvider(HELMFILE_SELECTOR, references),
         vscode.languages.registerHoverProvider(HELMFILE_SELECTOR, hover),
+        vscode.languages.registerSignatureHelpProvider(HELMFILE_SELECTOR, new HelmfileSignatureHelpProvider(), ' ', '(', ','),
         vscode.languages.registerCodeLensProvider(HELMFILE_SELECTOR, lenses),
         vscode.languages.registerDocumentSemanticTokensProvider(HELMFILE_SELECTOR, new HelmfileSemanticTokensProvider(), new vscode.SemanticTokensLegend(SEMANTIC_TOKEN_TYPES)),
         vscode.languages.registerDocumentSymbolProvider(HELMFILE_SELECTOR, new HelmfileDocumentSymbolProvider()),

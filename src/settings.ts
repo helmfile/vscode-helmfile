@@ -32,6 +32,15 @@ export function mutatingCommandsEnabled(): boolean {
 }
 
 /**
+ * Chart-aware assistance for files under `<chart>/templates/` is on by
+ * default; `helmfile.chartSupport: false` turns it off (only generic Go
+ * template help remains).
+ */
+export function chartSupportEnabled(): boolean {
+    return vscode.workspace.getConfiguration('helmfile').get<boolean>('chartSupport') ?? true;
+}
+
+/**
  * The active Helmfile environment, saved per helmfile project (the
  * directory holding the entry state) like the IntelliJ plugin's
  * project-level setting; unrelated projects in one workspace keep

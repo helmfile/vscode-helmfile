@@ -1209,7 +1209,7 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
 // completion/hover, values.yaml-backed `.Values` completion, and
 // diagnostics that skip Helmfile state checks inside charts.
 {
-    const { chartRootOf, isChartTemplateFile, chartTemplateContextFor, chartValuePreview, CHART_BUILTINS } = require('../src/chartContext') as typeof import('../src/chartContext');
+    const { chartRootOf, isChartTemplateFile, chartTemplateContextFor, chartTemplateDetected, chartValuePreview, CHART_BUILTINS } = require('../src/chartContext') as typeof import('../src/chartContext');
     const fs = require('node:fs');
     const os = require('node:os');
     const path = require('node:path');
@@ -1263,6 +1263,13 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
             let offset = 0;
             for (let i = 0; i < pos.line; i++) offset += (lines[i]?.length ?? 0) + 1;
             return offset + pos.character;
+        },
+        positionAt: (offset: number) => {
+            const lines = text.split('\n');
+            let line = 0, seen = 0;
+            for (let i = 0; i < lines.length; i++) { seen += lines[i].length + 1; if (offset < seen) { line = i; break; } }
+            const character = offset - lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0);
+            return new vscode.Position(line, Math.max(0, character));
         },
     }) as never;
     const chartAt = (text: string, index: number) => {
@@ -1350,6 +1357,174 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     const bad = '{{ .Values.x }\n';
     diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => bad } as never);
     check('chart template keeps template diagnostics', captured.length === 1, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
+    // ---- Extended chart fixtures: subchart, schema, defines, list values. ----
+    fs.writeFileSync(path.join(root, 'values.yaml'), 'image:\n  repository: nginx\n  tag: latest\nreplicas: 3\nlist:\n  - name: a\n    port: 1\n  - name: b\n    port: 2\n');
+    fs.writeFileSync(path.join(root, 'values.schema.json'), JSON.stringify({
+        properties: { image: { type: 'object', description: 'Container image of the app.' } },
+    }));
+    fs.writeFileSync(path.join(root, 'charts', 'subchart', 'Chart.yaml'), 'name: subchart\nversion: 0.1.0\n');
+    fs.writeFileSync(path.join(root, 'charts', 'subchart', 'values.yaml'), 'port: 8080\n');
+    const helpers = path.join(root, 'templates', '_helpers.tpl');
+    fs.writeFileSync(helpers, '{{- define "mychart.name" -}}\n{{ .Chart.Name }}\n{{- end -}}\n{{- define "mychart.fullname" -}}\n{{ include "mychart.name" . }}-proxy\n{{- end -}}\n{{ define "unclosed.def" }}\nx');
+    const overlay = fs.mkdtempSync(path.join(os.tmpdir(), 'chartmodel-'));
+    fs.writeFileSync(path.join(overlay, 'helmfile.yaml'), [
+        'releases:',
+        '  - name: app',
+        '    chart: ./charts/app',
+        '    values:',
+        '      - ./app-values.yaml',
+        '      - port: 9090',
+        '    set:',
+        '      - name: replicas',
+        '        value: 5',
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(overlay, 'app-values.yaml'), 'image:\n  tag: overlay-tag\n');
+    fs.mkdirSync(path.join(overlay, 'charts', 'app', 'templates'), { recursive: true });
+    fs.writeFileSync(path.join(overlay, 'charts', 'app', 'Chart.yaml'), 'name: app\nversion: 0.1.0\n');
+    fs.writeFileSync(path.join(overlay, 'charts', 'app', 'values.yaml'), 'image:\n  tag: default-tag\nreplicas: 1\nport: 80\n');
+    fs.writeFileSync(path.join(overlay, 'charts', 'app', 'templates', 'dep.yaml'), 'apiVersion: apps/v1\n');
+    const overlayTemplate = path.join(overlay, 'charts', 'app', 'templates', 'dep.yaml');
+
+    // ---- chartModel: overlay precedence and sources. ----
+    const { chartModelFor, subchartModel, iterationBaseModel } = require('../src/chartModel') as typeof import('../src/chartModel');
+    const overlayContext = chartTemplateContextFor(overlayTemplate, nextStamp());
+    check('overlay context resolves', overlayContext != null);
+    if (overlayContext) {
+        const model = chartModelFor(overlayContext, nextStamp(), 'default');
+        const tag = model.valueAt(['image', 'tag']);
+        check('overlay: values file overrides chart default', tag != null && tag.preview === 'overlay-tag', JSON.stringify(tag));
+        check('overlay: values file is the source', tag != null && tag.source.includes('app-values.yaml'), tag ? tag.source : 'null');
+        const port = model.valueAt(['port']);
+        check('overlay: inline values apply', port != null && port.preview === '9090', JSON.stringify(port));
+        const replicas = model.valueAt(['replicas']);
+        check('overlay: set entry wins', replicas != null && replicas.preview === '5', JSON.stringify(replicas));
+        check('overlay: set entry is the source', replicas != null && replicas.source === 'set: replicas', replicas ? replicas.source : 'null');
+    }
+    const freshContext = chartTemplateContextFor(template, nextStamp());
+    check('fresh context for main chart', freshContext != null);
+    if (freshContext) {
+        const model = chartModelFor(freshContext, nextStamp(), 'default');
+        const image = model.keysUnder([]).find(k => k.key === 'image');
+        check('model: mapping key carries values.yaml source', image != null && image.source === 'mychart values.yaml', image ? image.source : 'null');
+        check('model: preview of mapping is inline', image != null && image.preview === '{repository, tag}', image ? String(image.preview) : 'null');
+        const sub = subchartModel(freshContext, 'subchart', nextStamp());
+        check('model: subchart resolves its values', sub != null && sub.valueAt(['port'])?.preview === '8080', JSON.stringify(sub?.valueAt(['port'])));
+        check('model: subchart missing chart is null', subchartModel(freshContext, 'nope', nextStamp()) === null);
+        const base = iterationBaseModel('.Values.list', freshContext, nextStamp(), 'default');
+        check('model: iteration base over chart values', base != null && base.segments.join('.') === 'list', base ? base.segments.join('.') : 'null');
+        check('model: chart files exclude templates/', model.files.includes('values.yaml') && !model.files.includes('templates/deployment.yaml'), JSON.stringify(model.files));
+        check('model: description from values.schema.json', model.schemaDescriptionAt(['image']) === 'Container image of the app.', String(model.schemaDescriptionAt(['image'])));
+        const elementKeys = model.elementKeys(['list']).map(k => k.key);
+        check('model: elementKeys of a list', elementKeys.includes('name') && elementKeys.includes('port'), JSON.stringify(elementKeys));
+        check('model: iteration base rejects non-values path', iterationBaseModel('.Chart.Name', freshContext, nextStamp(), 'default') === null);
+    }
+
+    // ---- chartDefines: scanning and calls. ----
+    const { scanDefines, chartDefinesFor, chartCallsFor, templateCallAt } = require('../src/chartDefines') as typeof import('../src/chartDefines');
+    const scanned = scanDefines(fs.readFileSync(helpers, 'utf8'), helpers);
+    check('defines: names scanned', scanned.map(d => d.name).includes('mychart.name') && scanned.map(d => d.name).includes('mychart.fullname'), JSON.stringify(scanned.map(d => d.name)));
+    check('defines: unclosed define recorded to EOF', scanned.some(d => d.name === 'unclosed.def' && d.end === fs.readFileSync(helpers, 'utf8').length), JSON.stringify(scanned.map(d => [d.name, d.end])));
+    check('defines: body captured', (scanned.find(d => d.name === 'mychart.name')?.body ?? '').includes('.Chart.Name'), scanned.find(d => d.name === 'mychart.name')?.body ?? '');
+    if (freshContext) {
+        const allDefines = chartDefinesFor(freshContext, nextStamp(), null);
+        check('defines: cross-file collection includes helpers', allDefines.some(d => d.name === 'mychart.fullname'), JSON.stringify(allDefines.map(d => d.name)));
+        const calls = chartCallsFor(freshContext, nextStamp(), null);
+        check('defines: calls collected with file', calls.some(c => c.name === 'mychart.name' && c.file === helpers), JSON.stringify(calls));
+        const callText = '{{ include "mychart.name" . }}';
+        check('defines: templateCallAt finds name', templateCallAt(callText, 12)?.name === 'mychart.name', JSON.stringify(templateCallAt(callText, 12)));
+        check('defines: templateCallAt outside name is null', templateCallAt(callText, 2) === null, JSON.stringify(templateCallAt(callText, 2)));
+    }
+
+    // ---- Completion: subcharts, files, defines, iteration, snippets. ----
+    const subchartValuesList = chartAt('{{ .Subcharts.subchart.Values.', 30);
+    check('.Subcharts.<name>.Values. completes subchart keys', subchartValuesList.items.some(i => i.label === 'port'), JSON.stringify(subchartValuesList.items.map(i => i.label)));
+    const filesList = chartAt('{{ .Files.Get "', 15);
+    const fileLabels = filesList.items.map(i => String(i.label));
+    check('.Files.Get completes chart files', fileLabels.includes('values.yaml') && fileLabels.includes('Chart.yaml'), JSON.stringify(fileLabels));
+    check('.Files.Get excludes templates/', !fileLabels.some(f => f.startsWith('templates/')), JSON.stringify(fileLabels));
+    const defineList = chartAt('{{ include "', 12);
+    const defineLabels = defineList.items.map(i => String(i.label));
+    check('include completes define names', defineLabels.includes('mychart.name') && defineLabels.includes('mychart.fullname'), JSON.stringify(defineLabels));
+    const includeDetail = defineList.items.find(i => i.label === 'mychart.name');
+    check('include completion shows define body', includeDetail != null && String(includeDetail.detail).includes('_helpers.tpl'), includeDetail ? String(includeDetail.detail) : 'null');
+    const rangeText = '{{ range .Values.list }}{{ .';
+    const rangeList = chartAt(rangeText, rangeText.length);
+    const rangeLabels = rangeList.items.map(i => String(i.label));
+    check('range element keys complete relative paths', rangeLabels.includes('name') && rangeLabels.includes('port'), JSON.stringify(rangeLabels));
+    check('range element completion skips state paths', !rangeLabels.includes('.Environment.Name'), JSON.stringify(rangeLabels));
+    const withText = '{{ with .Values.image }}{{ .';
+    const withList = chartAt(withText, withText.length);
+    check('with scope completes map keys', withList.items.some(i => i.label === 'repository'), JSON.stringify(withList.items.map(i => i.label)));
+    const snippetList = chartAt('{{ ran', 6);
+    check('snippet skeleton offered', snippetList.items.some(i => i.kind === vscode.CompletionItemKind.Snippet && i.label === 'range'), JSON.stringify(snippetList.items.filter(i => i.kind === vscode.CompletionItemKind.Snippet).map(i => i.label)));
+
+    // ---- Hover: defines, subchart values, iteration element, schema. ----
+    const defineHover = hoverAt('{{ include "mychart.name" . }}', 12);
+    check('include hover shows define body', defineHover != null && hoverText(defineHover).includes('named template') && hoverText(defineHover).includes('_helpers.tpl'), hoverText(defineHover));
+    const subHover = hoverAt('{{ .Subcharts.subchart.Values.port }}', 31);
+    check('subchart values hover resolves', subHover != null && hoverText(subHover).includes('8080'), hoverText(subHover));
+    const rangeHoverText = '{{ range .Values.list }}{{ .port }}{{ end }}';
+    const rangeHover = hoverAt(rangeHoverText, 29);
+    check('range element field hover', rangeHover != null && hoverText(rangeHover).includes('`range` element') && hoverText(rangeHover).includes('name'), hoverText(rangeHover));
+    const schemaHover = hoverAt('{{ .Values.image }}', 11);
+    check('schema description in values hover', schemaHover != null && hoverText(schemaHover).includes('Container image of the app.'), hoverText(schemaHover));
+
+    // ---- Navigation: definition and references. ----
+    const { HelmfileDefinitionProvider, chartTemplateReferences } = require('../src/references') as typeof import('../src/references');
+    const definition = new HelmfileDefinitionProvider(env).provideDefinition(mkChartDoc('{{ include "mychart.name" . }}') as never, new vscode.Position(0, 12)) as { uri: { fsPath: string } } | null;
+    check('include jumps to define', definition != null && definition.uri.fsPath.endsWith('_helpers.tpl'), definition ? definition.uri.fsPath : 'null');
+    if (freshContext) {
+        const helperText = fs.readFileSync(helpers, 'utf8');
+        const nameOffset = helperText.indexOf('"mychart.name"') + 1;
+        const refs = chartTemplateReferences(helpers, helperText, nameOffset, freshContext);
+        check('define references include declaration and calls', refs.length >= 2 && refs.some(r => r.uri.fsPath.endsWith('_helpers.tpl')), JSON.stringify(refs.map(r => r.uri.fsPath)));
+        const overlayRefs = chartTemplateReferences(template, '{{ include "mychart.fullname" . }}', 12, freshContext);
+        check('references on a call include other calls', overlayRefs.length === 2 && overlayRefs.some(r => r.uri.fsPath.endsWith('_helpers.tpl')) && overlayRefs.some(r => r.uri.fsPath.endsWith('deployment.yaml')), JSON.stringify(overlayRefs.map(r => r.uri.fsPath)));
+    }
+
+    // ---- Signature help. ----
+    const { HelmfileSignatureHelpProvider } = require('../src/signatureHelp') as typeof import('../src/signatureHelp');
+    const signature = new HelmfileSignatureHelpProvider();
+    const sigDoc = (text: string, index: number) => {
+        const doc = mkChartDoc(text);
+        const lines = text.split('\n');
+        let line = 0, seen = 0;
+        for (let i = 0; i < lines.length; i++) { seen += lines[i].length + 1; if (index < seen) { line = i; break; } }
+        const character = index - lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0);
+        return signature.provideSignatureHelp(doc, new vscode.Position(line, character)) as { signatures: { label: string; parameters: unknown[] }[]; activeParameter: number } | null;
+    };
+    const includeText = '{{ include "mychart.name" ';
+    const includeSig = sigDoc(includeText, includeText.length);
+    check('signature help for include', includeSig != null && includeSig.signatures.length > 0 && String(includeSig.signatures[0].label).startsWith('include('), includeSig ? String(includeSig.signatures[0]?.label) : 'null');
+    const printfText = '{{ printf "%s-%s" "a" ';
+    const printfSig = sigDoc(printfText, printfText.length);
+    check('signature help counts parameters', printfSig != null && printfSig.activeParameter === 2, printfSig ? String(printfSig.activeParameter) : 'null');
+    const noSig = sigDoc('{{ .Values.image ', 16);
+    check('no signature help outside calls', noSig === null, JSON.stringify(noSig));
+
+    // ---- Document symbols: define outline. ----
+    const { HelmfileDocumentSymbolProvider } = require('../src/documentSymbol') as typeof import('../src/documentSymbol');
+    const symbolsProvider = new HelmfileDocumentSymbolProvider();
+    const helperSymbols = symbolsProvider.provideDocumentSymbols(mkChartDoc(fs.readFileSync(helpers, 'utf8')) as never) as { name: string; detail: string }[];
+    check('outline shows defines', helperSymbols.some(s => s.name === 'mychart.name' && s.detail === 'define'), JSON.stringify(helperSymbols));
+
+    // ---- Settings gate: helmfile.chartSupport=false. ----
+    (vscode as unknown as { configOverrides: Record<string, unknown> }).configOverrides.chartSupport = false;
+    const disabledRootList = chartAt('{{ .', 4);
+    const disabledLabels = disabledRootList.items.map(i => String(i.label));
+    check('chartSupport=false hides chart roots', !disabledLabels.includes('.Values'), JSON.stringify(disabledLabels));
+    check('chartSupport=false hides state paths on chart files', !disabledLabels.includes('.Environment.Name'), JSON.stringify(disabledLabels));
+    const disabledValuesList = chartAt('{{ .Values.image.', 18);
+    check('chartSupport=false stops value completion', disabledValuesList.items.length === 0, JSON.stringify(disabledValuesList.items.map(i => i.label)));
+    check('chartSupport=false keeps chart detection', chartTemplateDetected(template, nextStamp()), template);
+    check('chartSupport=false disables chart context', chartTemplateContextFor(template, nextStamp()) === null, 'expected null');
+    const disabledHover = hoverAt('{{ .Values.image.tag }}', 16);
+    check('chartSupport=false keeps function hover only', disabledHover === null || !hoverText(disabledHover).includes('values.yaml'), hoverText(disabledHover));
+    captured.length = 0;
+    diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => stateish } as never);
+    check('chartSupport=false still skips state diagnostics', captured.length === 0, JSON.stringify(captured));
+    (vscode as unknown as { configOverrides: Record<string, unknown> }).configOverrides.chartSupport = true;
 }
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);

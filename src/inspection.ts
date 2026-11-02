@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
-import { chartFileOf, chartTemplateContextFor } from './chartContext';
+import { chartFileOf, chartTemplateDetected } from './chartContext';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
 import { contentStamp, isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
@@ -69,7 +69,7 @@ export class HelmfileDiagnostics implements vscode.Disposable {
         templateBlocks(text, diagnostics);
         // Chart template files are Helm templates, not Helmfile state:
         // only template/YAML checks apply.
-        if (chartTemplateContextFor(chartFileOf(document.uri), contentStamp())) {
+        if (chartTemplateDetected(chartFileOf(document.uri), contentStamp())) {
             this.collection.set(document.uri, diagnostics);
             return;
         }

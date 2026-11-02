@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { STATE_NAMES } from './values';
 import { parseTree, mappingGet, scalarPathText, type YNode, type YTree } from './yamlTree';
+import { chartSupportEnabled } from './settings';
 
 const CHART_MARKERS = ['Chart.yaml', 'Chart.yml'];
 /** How many directories to walk up looking for a Chart.yaml. */
@@ -65,24 +66,42 @@ export interface ChartTemplateContext {
 }
 
 /**
- * Memoized chart context for the most recent (file, stamp) pair, so the
+ * Memoized detection result for the most recent (file, stamp) pair, so the
  * providers asking on every keystroke walk the directory chain at most
  * once per content version. Chart files on disk that change while no
  * open document changes are picked up on the next stamp bump.
  */
-let memo: { stamp: number; file: string; value: ChartTemplateContext | null } = { stamp: -1, file: '', value: null };
+const MEMO_LIMIT = 8;
+const memos = new Map<string, { stamp: number; detected: boolean; value: ChartTemplateContext | null }>();
+
+function chartMemo(file: string, stamp: number): { detected: boolean; value: ChartTemplateContext | null } {
+    let entry = memos.get(file);
+    if (!entry || entry.stamp !== stamp) {
+        const root = templateRootOf(file);
+        entry = { stamp, detected: root !== null, value: root ? computeContext(root) : null };
+        if (memos.size >= MEMO_LIMIT) memos.delete(memos.keys().next().value as string); // evict oldest
+        memos.set(file, entry);
+    }
+    return entry;
+}
+
+/**
+ * True when the file is a chart template file, regardless of settings —
+ * diagnostics uses this so Helmfile state checks never fire for Helm
+ * template files even when chart support is switched off.
+ */
+export function chartTemplateDetected(file: string | null | undefined, stamp: number): boolean {
+    return file !== null && file !== undefined && chartMemo(file, stamp).detected;
+}
 
 /**
  * Chart template context for a document, or null when the file is not a
- * chart template file (callers fall through to Helmfile state handling).
+ * chart template file (callers fall through to Helmfile state handling)
+ * or chart support is disabled via `helmfile.chartSupport: false`.
  */
 export function chartTemplateContextFor(file: string | null | undefined, stamp: number): ChartTemplateContext | null {
     if (!file) return null;
-    if (memo.stamp !== stamp || memo.file !== file) {
-        const root = templateRootOf(file);
-        memo = { stamp, file, value: root ? computeContext(root) : null };
-    }
-    return memo.value;
+    return chartSupportEnabled() ? chartMemo(file, stamp).value : null;
 }
 
 function computeContext(root: string): ChartTemplateContext {

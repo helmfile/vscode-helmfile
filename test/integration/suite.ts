@@ -150,6 +150,76 @@ async function main(): Promise<void> {
     const codeActions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', doc.uri, new vscode.Range(doc.positionAt(probeOffset), doc.positionAt(probeOffset)));
     check('code actions resolve', Array.isArray(codeActions), `actions=${codeActions?.length ?? 0}`);
 
+    // 8. Chart-aware assistance: a chart fixture next to a helmfile state
+    //    file must get language claiming, chart completion (with the release
+    //    values overlay), hover, define navigation and outline symbols.
+    const fs2 = await import('node:fs');
+    const os = await import('node:os');
+    const chartWs = fs2.mkdtempSync(path.join(os.tmpdir(), 'it-chart-'));
+    fs2.mkdirSync(path.join(chartWs, 'charts', 'demo', 'templates'), { recursive: true });
+    fs2.mkdirSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar'), { recursive: true });
+    fs2.writeFileSync(path.join(chartWs, 'helmfile.yaml'),
+        'releases:\n  - name: demo\n    chart: ./charts/demo\n    values:\n      - ./demo-values.yaml\n    set:\n      - name: replicaCount\n        value: 3\n');
+    fs2.writeFileSync(path.join(chartWs, 'demo-values.yaml'), 'image:\n  tag: overlay-tag\n');
+    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'Chart.yaml'), 'apiVersion: v2\nname: demo\nversion: 0.1.0\n');
+    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'values.yaml'), 'image:\n  repository: nginx\n  tag: default-tag\n');
+    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar', 'Chart.yaml'), 'apiVersion: v2\nname: sidecar\nversion: 0.1.0\n');
+    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar', 'values.yaml'), 'port: 9090\n');
+    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'templates', '_helpers.tpl'),
+        '{{- define "demo.name" -}}\n{{ .Chart.Name }}\n{{- end -}}\n');
+    const chartTemplate = path.join(chartWs, 'charts', 'demo', 'templates', 'deployment.yaml');
+    fs2.writeFileSync(chartTemplate, 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ include "demo.name" . }}\nspec:\n  replicas: {{ .Values.replicaCount }}\n');
+    try {
+        const chartUri = vscode.Uri.file(chartTemplate);
+        const cdoc = await vscode.workspace.openTextDocument(chartUri);
+        await vscode.window.showTextDocument(cdoc);
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        check('chart template languageId=helmfile', cdoc.languageId === 'helmfile', `got '${cdoc.languageId}'`);
+        const chartDiags = vscode.languages.getDiagnostics(chartUri).filter(d => d.source === 'helmfile');
+        check('chart template clean diagnostics', chartDiags.length === 0, JSON.stringify(chartDiags.map(d => d.message.slice(0, 40))));
+
+        let probeIndex = 0;
+        const chartCompleteAt = async (snippet: string): Promise<string[]> => {
+            const scratch = path.join(chartWs, 'charts', 'demo', 'templates', `complete-probe-${probeIndex++}.yaml`);
+            fs2.writeFileSync(scratch, snippet);
+            const sdoc = await vscode.workspace.openTextDocument(vscode.Uri.file(scratch));
+            const items = (await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', sdoc.uri, sdoc.positionAt(snippet.length))) as { items?: vscode.CompletionItem[] };
+            return (items?.items ?? []).map(i => (typeof i.label === 'string' ? i.label : String((i.label as { label: string }).label)));
+        };
+        const builtinKeys = await chartCompleteAt('{{ .Chart.N');
+        check('chart builtin completion', builtinKeys.includes('Name'), `labels=${builtinKeys.slice(0, 6).join(',')}`);
+        const valueKeys = await chartCompleteAt('{{ .Values.image.');
+        check('chart values completion includes chart default', valueKeys.includes('tag'), `labels=${valueKeys.slice(0, 6).join(',')}`);
+        const overlayKeys = await chartCompleteAt('{{ .Values.re');
+        check('chart values completion includes release overlay', overlayKeys.includes('replicaCount'), `labels=${overlayKeys.slice(0, 6).join(',')}`);
+        const subchartKeys = await chartCompleteAt('{{ .Subcharts.sidecar.Values.');
+        check('subchart values completion', subchartKeys.includes('port'), `labels=${subchartKeys.slice(0, 6).join(',')}`);
+        for (const probe of fs2.readdirSync(path.join(chartWs, 'charts', 'demo', 'templates')).filter(f => f.startsWith('complete-probe-'))) {
+            fs2.rmSync(path.join(chartWs, 'charts', 'demo', 'templates', probe), { force: true });
+        }
+
+        const overlayOffset = cdoc.getText().indexOf('.Values.replicaCount');
+        const chartHovers = (await vscode.commands.executeCommand('vscode.executeHoverProvider', chartUri, cdoc.positionAt(overlayOffset + 10))) as vscode.Hover[];
+        const hoverTexts = (chartHovers ?? []).map(h =>
+            (Array.isArray(h.contents) ? h.contents : [h.contents]).map(c => (c && typeof c === 'object' && 'value' in c ? String(c.value) : String(c))).join('|'));
+        check('chart hover previews overlay value', hoverTexts.some(t => t.includes('3') && t.includes('set: replicaCount')), hoverTexts.join(' || ').slice(0, 120));
+
+        const includeOffset = cdoc.getText().indexOf('"demo.name"') + 1;
+        const includeDefs = (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', chartUri, cdoc.positionAt(includeOffset))) as vscode.Location[];
+        check('include definition jumps to define', includeDefs.length > 0 && includeDefs[0].uri.fsPath.endsWith('_helpers.tpl'), `defs=${includeDefs.length}`);
+
+        const helpersUri = vscode.Uri.file(path.join(chartWs, 'charts', 'demo', 'templates', '_helpers.tpl'));
+        const helpersDoc = await vscode.workspace.openTextDocument(helpersUri);
+        const defineSymbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', helpersUri);
+        check('define symbols in outline', (defineSymbols ?? []).some(s => s.name === 'demo.name'), JSON.stringify(defineSymbols?.map(s => s.name)));
+
+        const sigHelp = (await vscode.commands.executeCommand('vscode.executeSignatureHelpProvider', chartUri, cdoc.positionAt(cdoc.getText().indexOf('include "demo.name" ') + 'include "demo.name" '.length))) as vscode.SignatureHelp | undefined;
+        check('signature help for include', (sigHelp?.signatures?.length ?? 0) > 0 && String(sigHelp!.signatures[0].label).startsWith('include('), `sig=${sigHelp?.signatures?.[0]?.label ?? 'none'}`);
+        void helpersDoc;
+    } finally {
+        fs2.rmSync(chartWs, { recursive: true, force: true });
+    }
+
     if (failures.length) {
         console.error(`[it] ${failures.length} failure(s): ${failures.join(', ')}`);
         process.exitCode = 1;

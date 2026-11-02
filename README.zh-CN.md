@@ -169,8 +169,24 @@ Host),自带 `examples/` 下的示例状态文件。
   块、YAML 语法 —— 而 Helmfile 状态检查(仓库、未知字段、缺失文件)保持静默。
 - 补全提供 Helm 内置变量(`.Chart.Name`、`.Release.Namespace`、
   `.Capabilities.KubeVersion`、`.Files.Get` 等)、`charts/` 下的子 chart 名,以及
-  来自 chart 自身 `values.yaml` 的 `.Values` 键。
-- Hover 展示内置变量文档,并显示键在 `values.yaml` 中的默认值。
+  基于 chart **生效值**的 `.Values` 键:chart 自身 `values.yaml` 叠加所有
+  `chart:` 指向该目录的 helmfile release 的 values 文件、内联 `values:` 与
+  `set:` 项。每项补全会标明值来自哪个来源。
+- `.Subcharts.<name>.Values.` 基于 `charts/` 下依赖自身的 `values.yaml` 补全与预览。
+- `.Files.Get "…"` / `.Files.Glob "…"` 补全 chart 根下的文件路径。
+- `range` / `with` 块内,相对路径 `.field` 基于被迭代的值补全 —— 遍历对象列表时
+  直接补全元素键。
+- `include "…"` / `template "…"` 跨 `templates/` 全部文件补全命名模板
+  (`define`)名。
+- Hover 展示内置变量文档、预览生效值(含来源与 `values.schema.json` 描述)、
+  展开 `include` 背后的 `define` 内容,以及 `range` 元素字段的解析结果。
+- 转到定义 / 查找引用在 `include`/`template` 调用与 `define` 声明之间跳转;
+  大纲中显示 `define` 声明符号。
+- 函数调用支持签名帮助(空格分隔参数风格,如 `include "name" `),代码片段
+  补全覆盖 `range` / `with` / `if` / `include` / `define` / `block`。
+
+可通过 `helmfile.chartSupport: false` 关闭 chart 感知能力;YAML/模板语法检查始终
+保留。只包含 chart(无 helmfile 状态)的工作区同样会激活扩展。
 
 当目录(或其祖先,最多向上 16 层)包含 `Chart.yaml` / `Chart.yml` 时被视为
 chart。chart 内的 Helmfile 状态文件仍按状态文件处理。
@@ -191,6 +207,7 @@ chart。chart 内的 Helmfile 状态文件仍按状态文件处理。
 | `helmfile.helmExecutablePath` | `helm` | `helm` 路径(chart 源码浏览) |
 | `helmfile.protectedEnvironments` | `prod.*` | 受保护环境的正则(全匹配) |
 | `helmfile.disableAutomaticDownloads` | `false` | 禁用仓库元数据下载 |
+| `helmfile.chartSupport` | `true` | Helm chart `templates/` 文件的 chart 感知能力 |
 | `helmfile.enableMutatingCommands` | `false` | 启用变更类命令(Apply/Destroy)及其 CodeLens;未启用时隐藏并拒绝执行 |
 
 HTTP(S) 访问遵循 VSCode 的 `http.proxy` 设置。

@@ -5,6 +5,9 @@
  */
 import * as vscode from 'vscode';
 import { mappingGet, parseTree, rootMappings, scalarPathText, type YMapping, type YPair } from './yamlTree';
+import { chartFileOf, chartTemplateDetected } from './chartContext';
+import { scanDefines } from './chartDefines';
+import { contentStamp, isHelmfileName } from './values';
 
 export interface HelmfileSymbol {
     readonly name: string;
@@ -138,6 +141,27 @@ export class HelmfileDocumentSymbolProvider implements vscode.DocumentSymbolProv
             for (const child of symbol.children) result.children.push(attach(child));
             return result;
         };
-        return helmfileSymbols(document.getText()).map(attach);
+        const symbols = helmfileSymbols(document.getText()).map(attach);
+        // Named templates declared in this file: the outline of a chart
+        // template file, and a useful addition for state `.gotmpl` files.
+        // Pure template scanning — independent of `helmfile.chartSupport`.
+        const text = document.getText();
+        const isChartTemplate = chartTemplateDetected(chartFileOf(document.uri), contentStamp());
+        const defines = isChartTemplate || isHelmfileName(document.uri.fsPath)
+            ? scanDefines(text, document.uri.fsPath)
+            : [];
+        for (const define of defines) {
+            symbols.push(attach({
+                name: define.name,
+                kind: 'template',
+                detail: 'define',
+                start: define.start,
+                end: define.end,
+                selectionStart: define.start,
+                selectionEnd: define.end,
+                children: [],
+            }));
+        }
+        return symbols;
     }
 }

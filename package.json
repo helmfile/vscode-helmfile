@@ -32,7 +32,9 @@
         "workspaceContains:helmfile.d/*.yaml",
         "workspaceContains:helmfile.d/*.yml",
         "workspaceContains:helmfile.d/*.yaml.gotmpl",
-        "workspaceContains:helmfile.d/*.yml.gotmpl"
+        "workspaceContains:helmfile.d/*.yml.gotmpl",
+        "workspaceContains:**/Chart.yaml",
+        "workspaceContains:**/Chart.yml"
     ],
     "contributes": {
         "languages": [
@@ -108,6 +110,11 @@
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Enable the mutating commands (Apply Release…, Destroy Release…) and their code lenses. They change the cluster state, so they stay hidden and are refused until you opt in."
+                },
+                "helmfile.chartSupport": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Chart-aware assistance for files under `<chart>/templates/`: Helm built-in variables, chart `values.yaml` keys, `values.schema.json` descriptions, named-template navigation and snippets. Turn off to keep only generic Go template help."
                 }
             }
         },
