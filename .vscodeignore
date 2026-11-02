@@ -9,6 +9,7 @@ out/**
 out/**/*.map
 .test-user-data/**
 .vscode-test/**
+.repro/**
 esbuild.js
 tsconfig.json
 **/*.ts
