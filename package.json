@@ -2,7 +2,7 @@
     "name": "vscode-helmfile",
     "displayName": "Helmfile",
     "description": "Helmfile state file editing: completion, navigation, repository awareness, environments, and Template/Diff/Apply/Destroy",
-    "version": "0.2.1",
+    "version": "0.3.0",
     "publisher": "helmfile-dev",
     "license": "MIT",
     "repository": {
@@ -32,7 +32,9 @@
         "workspaceContains:helmfile.d/*.yaml",
         "workspaceContains:helmfile.d/*.yml",
         "workspaceContains:helmfile.d/*.yaml.gotmpl",
-        "workspaceContains:helmfile.d/*.yml.gotmpl"
+        "workspaceContains:helmfile.d/*.yml.gotmpl",
+        "workspaceContains:**/Chart.yaml",
+        "workspaceContains:**/Chart.yml"
     ],
     "contributes": {
         "languages": [
@@ -53,7 +55,16 @@
                 ],
                 "filenamePatterns": [
                     "_*.tpl",
-                    "helmfile*.yaml.gotmpl"
+                    "helmfile*.yaml.gotmpl",
+                    "**/templates/*.yaml",
+                    "**/templates/*.yml",
+                    "**/templates/*.tpl",
+                    "**/templates/*.gotmpl",
+                    "**/templates/**/*.yaml",
+                    "**/templates/**/*.yml",
+                    "**/templates/**/*.tpl",
+                    "**/templates/**/*.gotmpl",
+                    "**/templates/NOTES.txt"
                 ],
                 "configuration": "./language-configuration.json"
             }
@@ -99,6 +110,16 @@
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Enable the mutating commands (Apply Release…, Destroy Release…) and their code lenses. They change the cluster state, so they stay hidden and are refused until you opt in."
+                },
+                "helmfile.chartSupport": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Chart-aware assistance for files under `<chart>/templates/`: Helm built-in variables, chart `values.yaml` keys, `values.schema.json` descriptions, named-template navigation and snippets. Turn off to keep only generic Go template help."
+                },
+                "helmfile.chartValueHints": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Inline hints in chart template files showing the effective value of `.Values` references (chart defaults overlaid with the helmfile release values), with a tooltip describing where the value comes from."
                 }
             }
         },
@@ -106,6 +127,11 @@
             {
                 "command": "helmfile.selectEnvironment",
                 "title": "Helmfile: Select Environment",
+                "category": "Helmfile"
+            },
+            {
+                "command": "helmfile.renderChartTemplate",
+                "title": "Helmfile: Render Chart Template",
                 "category": "Helmfile"
             },
             {

@@ -5,3 +5,6 @@ node_modules/
 .test-user-data/
 test/integration/*.js
 .vscode-test/
+
+# local verification scratch (VSCode profile, bundled suites, demo recording)
+.repro/

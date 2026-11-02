@@ -5,13 +5,19 @@
  * and HelmfileRepositoryCompletion (repository/chart/version fields).
  */
 import * as vscode from 'vscode';
+import * as path from 'node:path';
 import { TemplateScanner } from './templateScanner';
 import { allFunctions, functionMarkdown } from './functionCatalog';
 import { envVarSuggestions } from './envVars';
 import { chartValueKeys, chartValuesContextFor, type ChartValuesContext } from './chartValues';
 import { nodeAt, parseTree, rootMappings, type YPair, type YMapping } from './yamlTree';
 import { completionPath, schemaContext, schemaFields, type Field } from './schema';
-import { childKeys, SEPARATOR, valuesModel, type SourceFile, type ValuesDefinition } from './values';
+import { chartTemplateContextFor, chartTemplateDetected, chartFileOf, CHART_BUILTIN_SUFFIX, CHART_BUILTINS, CHART_ROOT_PATHS, type ChartTemplateContext } from './chartContext';
+import { chartModelFor, iterationBaseModel, subchartModel, type ChartKey } from './chartModel';
+import { chartDefinesFor } from './chartDefines';
+import { enclosingIteration } from './chartIteration';
+import { snippetsFor } from './templateSnippets';
+import { childKeys, contentStamp, SEPARATOR, valuesModel, type SourceFile, type ValuesDefinition } from './values';
 import { repositoryDownloadsEnabled } from './settings';
 import { chart, query, repositoryModel, type RepositoryQuery } from './repositories';
 import type { ChartEntry, ChartIndex } from './chartIndex';
@@ -47,10 +53,43 @@ export function chartVersions(chartText: string, request: RepositoryQuery, index
     return index.charts.get(name) ?? [];
 }
 
+/** Detail line shared by chart values completions: the default when scalar, the owning chart otherwise. */
+function chartKeyDetail(key: { readonly preview: string }, chart: string): string {
+    return key.preview && key.preview !== 'mapping' && key.preview !== 'list'
+        ? `chart default: ${key.preview.slice(0, 100)}`
+        : `chart value (${chart})`;
+}
+
 /** Length of the segment being completed after the last `.` of a value path. */
 function segmentLength(partial: string): number {
     const lastDot = partial.lastIndexOf('.');
     return lastDot >= 0 ? partial.length - lastDot - 1 : partial.length;
+}
+
+/** `image.rep` → parent `[image]`, partial `rep`; `image.` → parent `[image]`, partial ``. */
+function splitPartial(pathText: string): { parent: string[]; partial: string } {
+    if (pathText.endsWith('.')) return { parent: pathText.split('.').filter(segment => segment.length > 0), partial: '' };
+    const segments = pathText.split('.');
+    const partial = segments.pop() ?? '';
+    return { parent: segments.filter(segment => segment.length > 0), partial };
+}
+
+/** Completion items for effective chart keys, with source labels and previews. */
+function keyItems(keys: readonly ChartKey[], text: string, offset: number, typedLength: number): vscode.CompletionList {
+    const replace = offsetRange(text, offset - typedLength, offset);
+    const items: vscode.CompletionItem[] = [];
+    for (const key of keys) {
+        const item = new vscode.CompletionItem(key.key, vscode.CompletionItemKind.Variable);
+        item.detail = key.source ?? 'chart value';
+        const documentation = new vscode.MarkdownString();
+        if (key.preview) documentation.appendCodeblock(key.preview, 'yaml');
+        if (key.description) documentation.appendMarkdown('\n\n' + key.description);
+        if (documentation.value.length > 0) item.documentation = documentation;
+        item.insertText = key.key;
+        item.range = replace;
+        items.push(item);
+    }
+    return new vscode.CompletionList(items, false);
 }
 
 export class HelmfileCompletionProvider implements vscode.CompletionItemProvider {
@@ -65,6 +104,13 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
 
         if (TemplateScanner.at(text, offset)) {
             return this.actionCompletions(uri, text, offset);
+        }
+
+        // Chart template files (under <chart>/templates/) are Helm
+        // templates, not Helmfile state: no state field/repository
+        // completion. Actions above still get template completions.
+        if (chartTemplateDetected(chartFileOf(uri), contentStamp())) {
+            return new vscode.CompletionList([], false);
         }
 
         const tree = parseTree(text);
@@ -85,6 +131,10 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
     }
 
     private actionCompletions(uri: vscode.Uri, text: string, offset: number): vscode.CompletionList {
+        const chartTemplate = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        // Chart file with `helmfile.chartSupport: false`: generic template
+        // help only — no chart values, no Helmfile state paths.
+        const chartDetected = chartTemplate !== null || chartTemplateDetected(chartFileOf(uri), contentStamp());
         const head = text.slice(Math.max(0, offset - 500), offset);
         const envMatch = /\b(?:env|requiredEnv)\s*"([^"\r\n]*)$/.exec(head);
         if (envMatch) {
@@ -103,6 +153,8 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         }
         const pathMatch = PATH_PREFIX.exec(head);
         if (pathMatch) {
+            if (chartTemplate) return this.chartValueCompletions(text, offset, chartTemplate, pathMatch);
+            if (chartDetected) return new vscode.CompletionList([], false);
             const parent = pathMatch[1] + pathMatch[2];
             const model = valuesModel(uri, this.env());
             if (!model) return new vscode.CompletionList([], false);
@@ -122,6 +174,21 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
             }
             return new vscode.CompletionList(items, false);
         }
+        // `.Chart.` / `.Release.` … built-in Helm template variables, plus the
+        // `.Subcharts.<name>.Values.` drill-down.
+        if (chartTemplate) {
+            const builtinMatch = CHART_BUILTIN_SUFFIX.exec(head);
+            if (builtinMatch) {
+                if (builtinMatch[1] === 'Subcharts' && /^\.[A-Za-z0-9_]+\.Values\./.test(builtinMatch[2])) {
+                    return this.subchartValueCompletions(text, offset, chartTemplate, builtinMatch[2]);
+                }
+                return this.chartBuiltinCompletions(text, offset, chartTemplate, builtinMatch[1] + builtinMatch[2]);
+            }
+            const files = this.chartFileCompletions(text, offset, chartTemplate);
+            if (files) return files;
+            const defines = this.defineNameCompletions(uri, text, offset, chartTemplate);
+            if (defines) return defines;
+        }
 
         const items: vscode.CompletionItem[] = [];
         // Replace the whole partial token: the leading `.`/`$` of `.Values`
@@ -137,10 +204,179 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
             item.range = replace;
             items.push(item);
         }
-        for (const path of CONTEXT_PATHS) {
-            const item = new vscode.CompletionItem(path, vscode.CompletionItemKind.Variable);
-            item.detail = 'Helmfile state value path';
-            item.insertText = path;
+        if (chartTemplate) {
+            const typed = wordMatch ? wordMatch[0] : '';
+            const dollar = typed.startsWith('$');
+            const labelPrefix = dollar ? '$.' : '.';
+            for (const root of CHART_ROOT_PATHS) {
+                const label = labelPrefix + root;
+                const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Variable);
+                item.detail = 'Helm template variable';
+                item.insertText = label;
+                item.range = replace;
+                items.push(item);
+            }
+            // Inside `range`/`with`, `.` refers to the iterated element: offer
+            // its keys for relative paths (`.field`) that are not root names.
+            if (!dollar && /^\.[A-Za-z0-9_.]*$/.test(typed)) {
+                const { parent, partial } = splitPartial(typed.slice(1));
+                this.iterationCompletions(text, offset, chartTemplate, parent, partial, items);
+            }
+        } else if (!chartDetected) {
+            for (const path of CONTEXT_PATHS) {
+                const item = new vscode.CompletionItem(path, vscode.CompletionItemKind.Variable);
+                item.detail = 'Helmfile state value path';
+                item.insertText = path;
+                item.range = replace;
+                items.push(item);
+            }
+        }
+        // Skeleton snippets (range/with/if/…) for both state and chart files.
+        const wordPart = /[A-Za-z_][A-Za-z0-9_]*$/.exec(head);
+        if (wordPart) {
+            for (const snippet of snippetsFor(wordPart[0])) {
+                const item = new vscode.CompletionItem(snippet.trigger, vscode.CompletionItemKind.Snippet);
+                item.detail = snippet.detail;
+                item.documentation = new vscode.MarkdownString('```go-template\n' + snippet.body + '\n```');
+                item.insertText = new vscode.SnippetString(snippet.body);
+                item.sortText = '0000' + snippet.trigger;
+                item.range = offsetRange(text, offset - wordPart[0].length, offset);
+                items.push(item);
+            }
+        }
+        return new vscode.CompletionList(items, false);
+    }
+
+    /** `.Values.` keys of the chart's effective values: chart defaults overlaid by helmfile releases. */
+    private chartValueCompletions(text: string, offset: number, context: ChartTemplateContext, pathMatch: RegExpMatchArray): vscode.CompletionList {
+        const valuesPrefix = pathMatch[1] === '.Values.' || pathMatch[1] === '$.Values.'; // `$` is Helm's root context
+        if (!valuesPrefix) return new vscode.CompletionList([], false);
+        // `.Subcharts.<name>.Values.` resolves against the dependency's own
+        // values.yaml, not this chart's merged values.
+        const head = text.slice(Math.max(0, offset - 500), offset);
+        const subchart = /(?:^|[^.A-Za-z0-9_])\$?\.Subcharts\.([A-Za-z0-9_]+)\.Values\.$/.exec(head);
+        if (subchart) {
+            const model = subchartModel(context, subchart[1], contentStamp(), this.env());
+            if (model) return keyItems(model.keysUnder([]), text, offset, segmentLength(pathMatch[2]));
+        }
+        const { parent, partial } = splitPartial(pathMatch[2]);
+        const model = chartModelFor(context, contentStamp(), this.env());
+        return keyItems(model.keysUnder(parent).filter(key => key.key.startsWith(partial)), text, offset, segmentLength(pathMatch[2]));
+    }
+
+    /** `.Subcharts.<name>.Values.` keys: the dependency's effective values
+     * (its own defaults overlaid with the parent's `<name>` subtree). */
+    private subchartValueCompletions(text: string, offset: number, context: ChartTemplateContext, typedSuffix: string): vscode.CompletionList {
+        const segments = typedSuffix.split('.').filter(segment => segment.length > 0); // [name, 'Values', ...rest]
+        const model = subchartModel(context, segments[0], contentStamp(), this.env());
+        if (!model) return new vscode.CompletionList([], false);
+        const { parent, partial } = splitPartial(segments.slice(2).join('.'));
+        return keyItems(model.keysUnder(parent).filter(key => key.key.startsWith(partial)), text, offset, segmentLength(typedSuffix));
+    }
+
+    /** Quoted path literals of `.Files.Get "…"` / `.Files.Glob "…"`. */
+    private chartFileCompletions(text: string, offset: number, context: ChartTemplateContext): vscode.CompletionList | null {
+        const head = text.slice(Math.max(0, offset - 500), offset);
+        const match = /(?:\$)?\.Files\.(?:Get|GetBytes|Glob|Lines)\s*"([^"\r\n]*)$/.exec(head);
+        if (!match) return null;
+        const model = chartModelFor(context, contentStamp(), this.env());
+        const items: vscode.CompletionItem[] = [];
+        for (const file of model.files) {
+            if (!file.startsWith(match[1])) continue;
+            const item = new vscode.CompletionItem(file, vscode.CompletionItemKind.File);
+            item.detail = 'chart file';
+            item.insertText = file;
+            item.range = offsetRange(text, offset - match[1].length, offset);
+            items.push(item);
+        }
+        return new vscode.CompletionList(items, false);
+    }
+
+    /** Quoted template names of `include "…"` / `template "…"`. */
+    private defineNameCompletions(uri: vscode.Uri, text: string, offset: number, context: ChartTemplateContext): vscode.CompletionList | null {
+        const head = text.slice(Math.max(0, offset - 500), offset);
+        const match = /\b(?:include|template)\s*"([^"\r\n]*)$/.exec(head);
+        if (!match) return null;
+        const defines = chartDefinesFor(context, contentStamp(), { file: uri.fsPath, text });
+        const items: vscode.CompletionItem[] = [];
+        const seen = new Set<string>();
+        for (const define of defines) {
+            if (!define.name.startsWith(match[1]) || seen.has(define.name)) continue;
+            seen.add(define.name);
+            const item = new vscode.CompletionItem(define.name, vscode.CompletionItemKind.Reference);
+            item.detail = `define · ${path.basename(define.file)}`;
+            item.documentation = new vscode.MarkdownString('```go-template\n' + (define.body || '(empty)') + '\n```');
+            item.insertText = define.name;
+            item.range = offsetRange(text, offset - match[1].length, offset);
+            items.push(item);
+        }
+        return new vscode.CompletionList(items, false);
+    }
+
+    /**
+     * Keys of the element `.` refers to inside the innermost `range`/`with`.
+     * `parent` are the typed path segments before the partial word.
+     */
+    private iterationCompletions(text: string, offset: number, context: ChartTemplateContext, parent: readonly string[], partial: string, items: vscode.CompletionItem[]): void {
+        const iteration = enclosingIteration(text, offset);
+        if (!iteration) return;
+        const base = iterationBaseModel(iteration.path, context, contentStamp(), this.env());
+        if (!base) return;
+        const info = base.model.valueAt(base.segments);
+        if (!info) return;
+        // `range` over a list iterates elements; `with` narrows to the value itself.
+        const keys = parent.length === 0 && (iteration.keyword === 'range' && info.kind === 'list')
+            ? base.model.elementKeys(base.segments)
+            : base.model.keysUnder([...base.segments, ...parent]);
+        const replace = offsetRange(text, offset - partial.length, offset);
+        for (const key of keys) {
+            if (!key.key.startsWith(partial)) continue;
+            const item = new vscode.CompletionItem(key.key, vscode.CompletionItemKind.Variable);
+            item.detail = key.source ?? 'list element';
+            if (key.description) item.documentation = new vscode.MarkdownString(key.description);
+            item.insertText = key.key;
+            item.range = replace;
+            items.push(item);
+        }
+    }
+
+    /**
+     * Sub-paths of the built-in Helm template variables: completes the next
+     * path segment after the typed anchor (`.Capabilities.` → `KubeVersion`),
+     * deduplicated across the catalog's deeper entries.
+     */
+    private chartBuiltinCompletions(text: string, offset: number, context: ChartTemplateContext, typed: string): vscode.CompletionList {
+        const partial = typed.slice(typed.lastIndexOf('.') + 1);
+        const anchor = typed.slice(0, typed.length - partial.length); // dotted prefix ending in '.', or ''
+        const replace = offsetRange(text, offset - partial.length, offset);
+        const items: vscode.CompletionItem[] = [];
+        if (anchor === 'Subcharts.') {
+            for (const name of context.subcharts) {
+                const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Module);
+                item.detail = 'Subchart';
+                item.insertText = name;
+                item.range = replace;
+                items.push(item);
+            }
+            return new vscode.CompletionList(items, false);
+        }
+        const seen = new Set<string>();
+        for (const builtin of CHART_BUILTINS) {
+            if (!builtin.path.startsWith(anchor)) continue;
+            const rest = builtin.path.slice(anchor.length);
+            const dot = rest.indexOf('.');
+            const label = dot === -1 ? rest : rest.slice(0, dot);
+            if (!label.startsWith(partial) || label === partial || seen.has(label)) continue;
+            seen.add(label);
+            const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Variable);
+            if (dot === -1) {
+                item.detail = builtin.detail;
+                item.documentation = new vscode.MarkdownString(builtin.documentation);
+            } else {
+                item.detail = 'Helm template variable';
+                item.documentation = new vscode.MarkdownString(`Prefix of the built-in \`${anchor}${label}\` variable — keep typing for its fields.`);
+            }
+            item.insertText = label;
             item.range = replace;
             items.push(item);
         }
@@ -261,7 +497,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         for (const key of chartValueKeys(context, path)) {
             if (existing.has(key.key)) continue;
             const item = new vscode.CompletionItem(key.key, vscode.CompletionItemKind.Property);
-            item.detail = key.preview ? `chart default: ${key.preview.slice(0, 100)}` : `chart value (${context.chart})`;
+            item.detail = chartKeyDetail(key, context.chart);
             item.documentation = new vscode.MarkdownString(`Key defined by \`${context.chart}\`'s values.yaml.`);
             item.insertText = new vscode.SnippetString(key.key + ': ');
             item.range = replace;

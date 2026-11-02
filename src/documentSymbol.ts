@@ -5,10 +5,14 @@
  */
 import * as vscode from 'vscode';
 import { mappingGet, parseTree, rootMappings, scalarPathText, type YMapping, type YPair } from './yamlTree';
+import { chartFileOf, chartTemplateDetected } from './chartContext';
+import { scanDefines } from './chartDefines';
+import { TemplateScanner } from './templateScanner';
+import { contentStamp, isHelmfileName } from './values';
 
 export interface HelmfileSymbol {
     readonly name: string;
-    readonly kind: 'release' | 'repository' | 'environment' | 'template' | 'file';
+    readonly kind: 'release' | 'repository' | 'environment' | 'template' | 'file' | 'yamlKey';
     readonly detail: string;
     readonly start: number;
     readonly end: number;
@@ -23,6 +27,7 @@ const KIND_MAP: Record<HelmfileSymbol['kind'], vscode.SymbolKind> = {
     environment: vscode.SymbolKind.Enum,
     template: vscode.SymbolKind.Class,
     file: vscode.SymbolKind.File,
+    yamlKey: vscode.SymbolKind.Field,
 };
 
 export function helmfileSymbols(text: string): HelmfileSymbol[] {
@@ -123,6 +128,47 @@ function firstPair(mapping: YMapping): YPair {
     return mapping.pairs[0];
 }
 
+/** Upper bound on outline nodes for one chart template file. */
+const OUTLINE_BUDGET = 500;
+
+/**
+ * YAML structure outline for chart template files: template actions are
+ * masked so `{{ .Values.x }}` placeholders do not break key names.
+ */
+export function chartYamlSymbols(text: string): HelmfileSymbol[] {
+    const masked = TemplateScanner.mask(text);
+    const tree = parseTree(masked);
+    let budget = OUTLINE_BUDGET;
+    const visit = (mapping: YMapping): HelmfileSymbol[] => {
+        const symbols: HelmfileSymbol[] = [];
+        for (const pair of mapping.pairs) {
+            if (budget-- <= 0) break;
+            const value = pair.value;
+            let children: HelmfileSymbol[] = [];
+            if (value?.kind === 'mapping') {
+                children = visit(value);
+            } else if (value?.kind === 'sequence') {
+                for (const item of value.items) {
+                    if (budget <= 0 || item.kind !== 'mapping') continue;
+                    children = children.concat(visit(item));
+                }
+            }
+            symbols.push({
+                name: pair.key,
+                kind: 'yamlKey',
+                detail: '',
+                start: pair.start,
+                end: pair.end,
+                selectionStart: pair.keyStart,
+                selectionEnd: pair.keyEnd,
+                children,
+            });
+        }
+        return symbols;
+    };
+    return rootMappings(tree).flatMap(visit);
+}
+
 export class HelmfileDocumentSymbolProvider implements vscode.DocumentSymbolProvider {
     provideDocumentSymbols(document: vscode.TextDocument): vscode.DocumentSymbol[] {
         const position = (offset: number): vscode.Position => document.positionAt(offset);
@@ -138,6 +184,29 @@ export class HelmfileDocumentSymbolProvider implements vscode.DocumentSymbolProv
             for (const child of symbol.children) result.children.push(attach(child));
             return result;
         };
-        return helmfileSymbols(document.getText()).map(attach);
+        const text = document.getText();
+        const isChartTemplate = chartTemplateDetected(chartFileOf(document.uri), contentStamp());
+        const symbols: vscode.DocumentSymbol[] = isChartTemplate
+            ? [] // chart templates have no state symbols; show the YAML outline below
+            : helmfileSymbols(text).map(attach);
+        const defines = isChartTemplate || isHelmfileName(document.uri.fsPath)
+            ? scanDefines(text, document.uri.fsPath)
+            : [];
+        if (isChartTemplate) {
+            for (const symbol of chartYamlSymbols(text)) symbols.push(attach(symbol));
+        }
+        for (const define of defines) {
+            symbols.push(attach({
+                name: define.name,
+                kind: 'template',
+                detail: 'define',
+                start: define.start,
+                end: define.end,
+                selectionStart: define.start,
+                selectionEnd: define.end,
+                children: [],
+            }));
+        }
+        return symbols;
     }
 }

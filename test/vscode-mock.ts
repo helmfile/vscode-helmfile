@@ -7,13 +7,39 @@ class Position {
     constructor(readonly line: number, readonly character: number) {}
 }
 class Range {
-    constructor(readonly start: Position, readonly end: Position) {}
+    readonly start: Position;
+    readonly end: Position;
+    constructor(startOrLine: Position | number, endOrCharacter: Position | number, endLine?: number, endCharacter?: number) {
+        if (typeof startOrLine === 'number') {
+            this.start = new Position(startOrLine, endOrCharacter as number);
+            this.end = new Position(endLine as number, endCharacter as number);
+        } else {
+            this.start = startOrLine;
+            this.end = endOrCharacter as Position;
+        }
+    }
+    isEqual(other: Range): boolean {
+        return this.start.line === other.start.line && this.start.character === other.start.character
+            && this.end.line === other.end.line && this.end.character === other.end.character;
+    }
+    intersection(other: Range): Range | undefined {
+        const laterStart = this.start.line > other.start.line || (this.start.line === other.start.line && this.start.character > other.start.character)
+            ? this.start : other.start;
+        const earlierEnd = this.end.line < other.end.line || (this.end.line === other.end.line && this.end.character < other.end.character)
+            ? this.end : other.end;
+        if (laterStart.line > earlierEnd.line || (laterStart.line === earlierEnd.line && laterStart.character > earlierEnd.character)) return undefined;
+        return new Range(laterStart, earlierEnd);
+    }
 }
 class Diagnostic {
     constructor(readonly range: unknown, readonly message: string, readonly severity?: number) {}
 }
 class Location {
-    constructor(readonly uri: Uri, readonly range: any) {}
+    readonly range: any;
+    constructor(readonly uri: Uri, rangeOrPosition: any) {
+        // Match VSCode: a Position argument becomes a zero-width range.
+        this.range = rangeOrPosition instanceof Position ? new Range(rangeOrPosition, rangeOrPosition) : rangeOrPosition;
+    }
 }
 class Hover {
     constructor(readonly contents: unknown, readonly range?: unknown) {}
@@ -48,6 +74,19 @@ class CompletionList {
     items: CompletionItem[];
     constructor(items: CompletionItem[] = [], isIncomplete = false) { this.items = items; this.isIncomplete = isIncomplete; }
 }
+class SignatureInformation {
+    parameters: ParameterInformation[] = [];
+    activeParameter?: number;
+    constructor(readonly label: string, readonly documentation?: unknown) {}
+}
+class ParameterInformation {
+    constructor(readonly label: string, readonly documentation?: unknown) {}
+}
+class SignatureHelp {
+    signatures: SignatureInformation[] = [];
+    activeSignature = 0;
+    activeParameter = 0;
+}
 class Uri {
     scheme = 'file';
     path: string;
@@ -65,6 +104,10 @@ class CodeLens {
     constructor(readonly range: { start: unknown; end: unknown }, command?: { title: string; command: string; arguments?: unknown[] }) {
         this.command = command;
     }
+}
+class InlayHint {
+    tooltip?: unknown;
+    constructor(readonly position: unknown, readonly label: string, readonly kind?: number) {}
 }
 class EventEmitter<T> {
     listeners = new Set<(e: T) => void>();
@@ -162,7 +205,11 @@ const outputChannel = () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const contentProviders = new Map<string, any>();
 
+/** Test hook: override `helmfile.*` configuration values. */
+const configOverrides: Record<string, unknown> = {};
+
 export = {
+    configOverrides,
     Uri,
     Position,
     Range,
@@ -173,6 +220,10 @@ export = {
     SnippetString,
     CompletionItem,
     CompletionList,
+    SignatureInformation,
+    ParameterInformation,
+    SignatureHelp,
+    InlayHint,
     CompletionItemKind: {
         Text: 0, Method: 1, Function: 2, Constructor: 3, Field: 4, Variable: 5, Class: 6,
         Interface: 7, Module: 8, Property: 9, Unit: 10, Value: 11, Enum: 12, Keyword: 13,
@@ -219,10 +270,12 @@ export = {
         findFiles: async () => [] as Uri[],
         asRelativePath: (pathOrUri: string | Uri): string => (typeof pathOrUri === 'string' ? pathOrUri : pathOrUri.fsPath),
         getConfiguration: (section?: string) => ({
-            get: (key: string): unknown =>
-                section === 'helmfile'
-                    ? ({ helmfileExecutablePath: 'helmfile', helmExecutablePath: 'helm', protectedEnvironments: 'prod.*', disableAutomaticDownloads: false } as Record<string, unknown>)[key]
-                    : undefined,
+            get: (key: string): unknown => {
+                if (key in configOverrides) return configOverrides[key];
+                return section === 'helmfile'
+                    ? ({ helmfileExecutablePath: 'helmfile', helmExecutablePath: 'helm', protectedEnvironments: 'prod.*', disableAutomaticDownloads: false, chartSupport: true, chartValueHints: true } as Record<string, unknown>)[key]
+                    : undefined;
+            },
             update: async () => {},
         }),
         fs: {},
@@ -249,6 +302,8 @@ export = {
         registerDefinitionProvider: () => ({ dispose: () => {} }),
         registerReferenceProvider: () => ({ dispose: () => {} }),
         registerHoverProvider: () => ({ dispose: () => {} }),
+        registerSignatureHelpProvider: () => ({ dispose: () => {} }),
+        registerInlayHintsProvider: () => ({ dispose: () => {} }),
         registerCodeActionsProvider: () => ({ dispose: () => {} }),
         registerCodeLensProvider: () => ({ dispose: () => {} }),
         registerDocumentSemanticTokensProvider: () => ({ dispose: () => {} }),

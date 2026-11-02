@@ -7,8 +7,11 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
+import { chartFileOf, chartTemplateContextFor, chartTemplateDetected, type ChartTemplateContext } from './chartContext';
+import { chartDefinesFor } from './chartDefines';
+import { chartModelFor } from './chartModel';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
-import { isHelmfileName, type SourceFile } from './values';
+import { contentStamp, isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
 import { repositoryService } from './repositoryService';
@@ -63,10 +66,21 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     analyze(document: vscode.TextDocument): void {
         const text = document.getText();
         const diagnostics: vscode.Diagnostic[] = [];
-        const source: SourceFile = { uri: document.uri, text, tree: parseTree(text) };
         yamlSyntaxErrors(document, diagnostics);
         unclosedActions(text, diagnostics);
         templateBlocks(text, diagnostics);
+        // Chart template files are Helm templates, not Helmfile state:
+        // only template/YAML checks apply.
+        if (chartTemplateDetected(chartFileOf(document.uri), contentStamp())) {
+            const chartContext = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
+            if (chartContext) {
+                missingDefineDiagnostics(document, chartContext, diagnostics);
+                schemaUnknownKeyDiagnostics(document, chartContext, diagnostics);
+            }
+            this.collection.set(document.uri, diagnostics);
+            return;
+        }
+        const source: SourceFile = { uri: document.uri, text, tree: parseTree(text) };
         repositoryDiagnostics(source, this.env.get(), diagnostics);
         unknownFieldDiagnostics(source, diagnostics);
         missingFileDiagnostics(source, this.env.get(), diagnostics);
@@ -457,4 +471,72 @@ function diagnosticAt(source: SourceFile, start: number, end: number, message: s
     const diagnostic = new vscode.Diagnostic(offsetRange(source.text, start, end), message, severity);
     diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
     return diagnostic;
+}
+
+/** Quick-fix payload for missing-define diagnostics: define name + helpers file. */
+export const missingChartDefines = new WeakMap<vscode.Diagnostic, { name: string; helpers: string }>();
+
+/** Quick-fix payload for schema-unknown-key diagnostics: dotted path + schema file + JSON type to declare. */
+export const schemaUnknownKeys = new WeakMap<vscode.Diagnostic, { segments: string[]; schemaFile: string; type: string }>();
+
+const INCLUDE_NAME = /\b(?:include|template)\s+"((?:[^"\\]|\\.)*)"/g;
+
+/** Warn about `include "x"` / `template "x"` calls with no matching `define`. */
+function missingDefineDiagnostics(document: vscode.TextDocument, context: ChartTemplateContext, diagnostics: vscode.Diagnostic[]): void {
+    const text = document.getText();
+    const defines = new Set(chartDefinesFor(context, contentStamp(), { file: document.uri.fsPath, text }).map(define => define.name));
+    const warned = new Set<string>();
+    for (const action of TemplateScanner.scan(text)) {
+        if (!action.closed) continue; // still being typed
+        const body = text.slice(action.bodyStart, action.bodyEnd);
+        INCLUDE_NAME.lastIndex = 0;
+        for (const match of body.matchAll(INCLUDE_NAME)) {
+            const name = match[1];
+            if (name.length === 0 || defines.has(name) || warned.has(name)) continue;
+            warned.add(name);
+            const literalStart = action.bodyStart + (match.index ?? 0) + match[0].indexOf('"');
+            const diagnostic = new vscode.Diagnostic(
+                offsetRange(text, literalStart, literalStart + name.length + 2),
+                `Named template "${name}" is not defined in this chart`,
+                vscode.DiagnosticSeverity.Warning,
+            );
+            diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+            missingChartDefines.set(diagnostic, { name, helpers: path.join(context.root, 'templates', '_helpers.tpl') });
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
+const SCHEMA_VALUE_PATH = /\$?\.Values((?:\.[A-Za-z0-9_]+)+)/g;
+
+/**
+ * Warn about `.Values.x.y` references that a strict values.schema.json
+ * (`additionalProperties: false` at the parent) does not declare — helm
+ * rejects those at install time. Explicit `.Values` paths only; relative
+ * paths inside `range`/`with` are not schema-checked.
+ */
+function schemaUnknownKeyDiagnostics(document: vscode.TextDocument, context: ChartTemplateContext, diagnostics: vscode.Diagnostic[]): void {
+    const schemaFile = path.join(context.root, 'values.schema.json');
+    if (!fs.existsSync(schemaFile)) return;
+    const text = document.getText();
+    const model = chartModelFor(context, contentStamp(), 'default');
+    const warned = new Set<string>();
+    for (const action of TemplateScanner.scan(text)) {
+        if (!action.closed) continue; // still being typed
+        const body = text.slice(action.bodyStart, action.bodyEnd);
+        for (const match of body.matchAll(SCHEMA_VALUE_PATH)) {
+            const segments = match[1].slice(1).split('.');
+            const dotted = segments.join('.');
+            if (warned.has(dotted)) continue;
+            const reason = model.schemaRejects(segments);
+            if (!reason) continue;
+            warned.add(dotted);
+            const start = action.bodyStart + (match.index ?? 0);
+            const diagnostic = new vscode.Diagnostic(offsetRange(text, start, start + match[0].length), reason, vscode.DiagnosticSeverity.Warning);
+            diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+            const kind = model.valueAt(segments)?.kind;
+            schemaUnknownKeys.set(diagnostic, { segments, schemaFile, type: kind === 'map' ? 'object' : kind === 'list' ? 'array' : 'string' });
+            diagnostics.push(diagnostic);
+        }
+    }
 }

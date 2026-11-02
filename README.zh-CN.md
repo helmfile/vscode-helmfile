@@ -6,6 +6,8 @@
 [helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
 移植而来,功能对齐。
 
+![Chart 能力演示](docs/demo-chart.gif)
+
 ## 安装
 
 ### 方式一:使用预编译 VSIX
@@ -14,7 +16,7 @@
 `vscode-helmfile-<version>.vsix`,然后执行:
 
 ```bash
-code --install-extension vscode-helmfile-0.2.1.vsix --force
+code --install-extension vscode-helmfile-0.3.0.vsix --force
 ```
 
 `--force` 用于覆盖升级已安装的旧版本。安装后重载窗口(**Developer: Reload
@@ -158,6 +160,56 @@ Host),自带 `examples/` 下的示例状态文件。
 - 未闭合 / 空 / 孤立的 Go 模板定界符与不匹配的 `if` / `range` / `with` /
   `define` / `block` 块,以及 YAML 语法错误——均带快速修复。
 
+### Chart 目录
+
+在 helmfile 状态文件旁存放 Helm chart 的工作区,`<chart>/templates/` 下的文件
+(`*.yaml`、`*.yml`、`*.tpl`、`NOTES.txt`,含子目录)会获得 chart 感知能力:
+
+- chart 模板文件由 Helmfile 语言接管,YAML 校验器不再把 Go 模板动作
+  (`{{ .Values.x }}`)当成非法 YAML,高亮全面生效。
+- 诊断切换为 Helm 模板规则 —— 未闭合动作、非法 `{{ define }}`/`{{ range }}`
+  块、YAML 语法 —— 而 Helmfile 状态检查(仓库、未知字段、缺失文件)保持静默。
+- 补全提供 Helm 内置变量(`.Chart.Name`、`.Release.Namespace`、
+  `.Capabilities.KubeVersion`、`.Files.Get` 等)、`charts/` 下的子 chart 名,以及
+  基于 chart **生效值**的 `.Values` 键:chart 自身 `values.yaml` 叠加所有
+  `chart:` 指向该目录的 helmfile release 的 values 文件、内联 `values:` 与
+  `set:` 项。每项补全会标明值来自哪个来源。
+- `.Subcharts.<name>.Values.` 基于依赖的**生效值**补全与预览:依赖自身的
+  `values.yaml`,叠加父 chart `values.yaml` 中的 `<name>:` 键以及指向父 chart
+  的 helmfile release 值覆盖 —— 与 Helm 渲染时的优先级一致。
+- `Chart.yaml` 依赖辅助:`name:` 补全 `charts/` 下已解包的依赖,`version:`
+  补全其 chart 版本,`repository:` 补全 helmfile 状态 `repositories:` 声明的
+  URL,`condition:` 补全 `values.yaml` 中的 `<依赖>.enabled` 键。
+- chart 含严格 `values.schema.json`(`additionalProperties: false`)时,引用
+  未声明的 `.Values` 键会产生警告,并提供**在 values.schema.json 中声明**
+  快速修复,自动插入缺失的属性链。
+- `.Files.Get "…"` / `.Files.Glob "…"` 补全 chart 根下的文件路径;悬停引号内
+  的路径可预览文件内容(`Glob` 则列出匹配文件)。
+- `range` / `with` 块内,相对路径 `.field` 基于被迭代的值补全 —— 遍历对象列表时
+  直接补全元素键。
+- `include "…"` / `template "…"` 跨 `templates/` 全部文件补全命名模板
+  (`define`)名;调用了不存在的命名模板会给出警告,并提供 **Create define**
+  快速修复 —— 在 `_helpers.tpl` 末尾追加骨架(文件不存在时一并创建)。
+- 行内值提示(Inlay Hints)直接在 `.Values` 引用后显示生效值,悬停可见值的
+  来源(chart `values.yaml`、覆盖文件或 `set:` 条目);用
+  `helmfile.chartValueHints: false` 关闭。
+- chart 模板文件的大纲展示 YAML 结构(模板动作已被遮蔽,`{{ .Values.x }}`
+  不会破坏键名),并附带 `define` 声明符号。
+- **▶ Render Chart Template** Code Lens 对 chart 执行 `helm template`,在侧边
+  编辑器中展示渲染后的清单。
+- Hover 展示内置变量文档、预览生效值(含来源与 `values.schema.json` 描述)、
+  展开 `include` 背后的 `define` 内容,以及 `range` 元素字段的解析结果。
+- 转到定义 / 查找引用在 `include`/`template` 调用与 `define` 声明之间跳转;
+  大纲中显示 `define` 声明符号。
+- 函数调用支持签名帮助(空格分隔参数风格,如 `include "name" `),代码片段
+  补全覆盖 `range` / `with` / `if` / `include` / `define` / `block`。
+
+可通过 `helmfile.chartSupport: false` 关闭 chart 感知能力;YAML/模板语法检查始终
+保留。只包含 chart(无 helmfile 状态)的工作区同样会激活扩展。
+
+当目录(或其祖先,最多向上 16 层)包含 `Chart.yaml` / `Chart.yml` 时被视为
+chart。chart 内的 Helmfile 状态文件仍按状态文件处理。
+
 ### Chart 仓库
 
 - HTTP(S) 仓库只下载 `index.yaml`;OCI 仓库使用分页 tag 列表与 Bearer 认证。
@@ -174,6 +226,8 @@ Host),自带 `examples/` 下的示例状态文件。
 | `helmfile.helmExecutablePath` | `helm` | `helm` 路径(chart 源码浏览) |
 | `helmfile.protectedEnvironments` | `prod.*` | 受保护环境的正则(全匹配) |
 | `helmfile.disableAutomaticDownloads` | `false` | 禁用仓库元数据下载 |
+| `helmfile.chartSupport` | `true` | Helm chart `templates/` 文件的 chart 感知能力 |
+| `helmfile.chartValueHints` | `true` | chart 模板中显示 `.Values` 生效值的行内提示 |
 | `helmfile.enableMutatingCommands` | `false` | 启用变更类命令(Apply/Destroy)及其 CodeLens;未启用时隐藏并拒绝执行 |
 
 HTTP(S) 访问遵循 VSCode 的 `http.proxy` 设置。
