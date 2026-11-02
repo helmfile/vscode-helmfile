@@ -53,7 +53,16 @@
                 ],
                 "filenamePatterns": [
                     "_*.tpl",
-                    "helmfile*.yaml.gotmpl"
+                    "helmfile*.yaml.gotmpl",
+                    "**/templates/*.yaml",
+                    "**/templates/*.yml",
+                    "**/templates/*.tpl",
+                    "**/templates/*.gotmpl",
+                    "**/templates/**/*.yaml",
+                    "**/templates/**/*.yml",
+                    "**/templates/**/*.tpl",
+                    "**/templates/**/*.gotmpl",
+                    "**/templates/NOTES.txt"
                 ],
                 "configuration": "./language-configuration.json"
             }

@@ -1205,5 +1205,151 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
         check('field item covers typed word only', r.end - r.start === 3, JSON.stringify(r));
     }
 }
+// Chart template files: chart context detection, built-in variable
+// completion/hover, values.yaml-backed `.Values` completion, and
+// diagnostics that skip Helmfile state checks inside charts.
+{
+    const { chartRootOf, isChartTemplateFile, chartTemplateContextFor, chartValuePreview, CHART_BUILTINS } = require('../src/chartContext') as typeof import('../src/chartContext');
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chartctx-'));
+    fs.writeFileSync(path.join(root, 'Chart.yaml'), 'apiVersion: v2\nname: mychart\nversion: 0.1.0\n');
+    fs.writeFileSync(path.join(root, 'values.yaml'), 'image:\n  repository: nginx\n  tag: latest\nreplicas: 3\n');
+    fs.mkdirSync(path.join(root, 'templates'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'charts', 'subchart'), { recursive: true });
+    const template = path.join(root, 'templates', 'deployment.yaml');
+    fs.writeFileSync(template, 'apiVersion: apps/v1\n');
+    fs.writeFileSync(path.join(root, 'values-no-chart.yaml'), 'a: 1\n');
+
+    check('chartRootOf finds chart root', chartRootOf(template) === root, String(chartRootOf(template)));
+    check('isChartTemplateFile accepts templates/', isChartTemplateFile(template), template);
+    check('isChartTemplateFile rejects chart values.yaml', !isChartTemplateFile(path.join(root, 'values.yaml')));
+    check('isChartTemplateFile rejects non-chart file', !isChartTemplateFile(path.join(os.tmpdir(), 'plain.yaml')));
+    const ymlRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'chartctx-'));
+    fs.mkdirSync(path.join(ymlRoot, 'templates'), { recursive: true });
+    fs.writeFileSync(path.join(ymlRoot, 'Chart.yml'), 'name: y\n');
+    check('Chart.yml also marks a chart', isChartTemplateFile(path.join(ymlRoot, 'templates', 'x.yaml')), ymlRoot);
+
+    let stamp = 1;
+    const nextStamp = () => ++stamp;
+    const context = chartTemplateContextFor(template, nextStamp());
+    check('chart context resolves', context != null);
+    if (context) {
+        check('chart name from Chart.yaml', context.name === 'mychart', context.name);
+        check('chart values tree parsed', context.valuesTree != null);
+        check('subchart listed', context.subcharts.includes('subchart'), JSON.stringify(context.subcharts));
+        check('chartValuePreview resolves scalar', chartValuePreview(context, 'image.repository') === 'nginx', String(chartValuePreview(context, 'image.repository')));
+        check('chartValuePreview handles missing key', chartValuePreview(context, 'nope.nope') === null);
+        check('chartValuePreview handles missing single key', chartValuePreview(context, 'nope') === null, String(chartValuePreview(context, 'nope')));
+        check('chart builtin catalog has Chart.Name', CHART_BUILTINS.some(b => b.path === 'Chart.Name'));
+    }
+    check('no context for state file outside chart', chartTemplateContextFor(path.join(os.tmpdir(), 'helmfile.yaml'), nextStamp()) === null);
+
+    // Helmfile state files inside a chart keep their state treatment.
+    const stateInChart = path.join(root, 'templates', 'helmfile.yaml');
+    fs.writeFileSync(stateInChart, 'releases: []\n');
+    check('isChartTemplateFile rejects state file inside chart', !isChartTemplateFile(stateInChart), stateInChart);
+    check('no chart context for state file inside chart', chartTemplateContextFor(stateInChart, nextStamp()) === null, stateInChart);
+
+    // Completion inside a chart template document.
+    const { HelmfileCompletionProvider } = require('../src/completion') as typeof import('../src/completion');
+    const mkChartDoc = (text: string) => ({
+        uri: vscode.Uri.file(template),
+        getText: () => text,
+        offsetAt: (pos: { line: number; character: number }) => {
+            const lines = text.split('\n');
+            let offset = 0;
+            for (let i = 0; i < pos.line; i++) offset += (lines[i]?.length ?? 0) + 1;
+            return offset + pos.character;
+        },
+    }) as never;
+    const chartAt = (text: string, index: number) => {
+        const doc = mkChartDoc(text);
+        const lines = text.split('\n');
+        let line = 0, seen = 0;
+        for (let i = 0; i < lines.length; i++) { seen += lines[i].length + 1; if (index < seen) { line = i; break; } }
+        const character = index - lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0);
+        return new HelmfileCompletionProvider(() => 'default').provideCompletionItems(doc, new vscode.Position(line, character)) as vscode.CompletionList;
+    };
+
+    const rootList = chartAt('{{ .', 4);
+    const rootLabels = rootList.items.map(i => String(i.label));
+    check('chart root paths offered', ['.Values', '.Chart', '.Release'].every(p => rootLabels.includes(p)), JSON.stringify(rootLabels.slice(0, 10)));
+    check('no state paths in chart actions', !rootLabels.includes('.Environment.Name'), JSON.stringify(rootLabels.slice(0, 14)));
+
+    const valuesList = chartAt('{{ .Values.', 11);
+    const valuesLabels = valuesList.items.map(i => String(i.label));
+    check('chart values keys from values.yaml', valuesLabels.includes('image') && valuesLabels.includes('replicas'), JSON.stringify(valuesLabels));
+    const repository = valuesList.items.find(i => i.label === 'image');
+    check('chart values detail mentions chart default', repository != null && String(repository.detail).includes('mychart'), repository ? String(repository.detail) : 'missing');
+
+    const nestedList = chartAt('{{ .Values.image.', 17);
+    const nestedLabels = nestedList.items.map(i => String(i.label));
+    check('nested chart values keys', nestedLabels.includes('repository') && nestedLabels.includes('tag'), JSON.stringify(nestedLabels));
+
+    const chartList = chartAt('{{ .Chart.', 10);
+    const chartLabels = chartList.items.map(i => String(i.label));
+    check('.Chart subpaths offered', chartLabels.includes('Name') && chartLabels.includes('AppVersion'), JSON.stringify(chartLabels.slice(0, 8)));
+    const kubeList = chartAt('{{ .Capabilities.KubeVersion.', 29);
+    check('.Capabilities nested subpaths', kubeList.items.some(i => i.label === 'Version'), JSON.stringify(kubeList.items.map(i => i.label)));
+    const subchartList = chartAt('{{ .Subcharts.', 14);
+    check('subchart names offered', subchartList.items.some(i => i.label === 'subchart'), JSON.stringify(subchartList.items.map(i => i.label)));
+
+    // Review regressions: builtin completion must complete the NEXT path
+    // segment, not the leaf of whatever entry happens to match.
+    const capList = chartAt('{{ .Capabilities.', 17);
+    const capLabels = capList.items.map(i => String(i.label));
+    check('.Capabilities offers KubeVersion', capLabels.includes('KubeVersion'), JSON.stringify(capLabels));
+    check('.Capabilities offers no leaf segments', !capLabels.includes('Version'), JSON.stringify(capLabels));
+    const partialList = chartAt('{{ .Chart.Nam', 13);
+    check('partial builtin completes without trailing dot', partialList.items.some(i => i.label === 'Name'), JSON.stringify(partialList.items.map(i => i.label)));
+    const exactList = chartAt('{{ .Chart.Name', 14);
+    check('fully typed builtin offers nothing new', exactList.items.length === 0 && !exactList.items.some(i => String(i.label) === ''), JSON.stringify(exactList.items.map(i => i.label)));
+    const dollarList = chartAt('{{ $.Values.image.', 18);
+    check('$ root context completes chart values', dollarList.items.some(i => i.label === 'repository'), JSON.stringify(dollarList.items.map(i => i.label)));
+
+    const keyList = chartAt('rep', 3);
+    check('no state field completion in chart templates', keyList.items.length === 0, JSON.stringify(keyList.items.map(i => i.label)));
+
+    // Hover inside a chart template document.
+    const { HelmfileHoverProvider } = require('../src/hover') as typeof import('../src/hover');
+    const { EnvironmentService } = require('../src/settings') as typeof import('../src/settings');
+    const env = new EnvironmentService({ workspaceState: { get: () => 'default', update: async () => undefined } } as never);
+    const hoverAt = (text: string, index: number) => {
+        const doc = mkChartDoc(text);
+        const lines = text.split('\n');
+        let line = 0, seen = 0;
+        for (let i = 0; i < lines.length; i++) { seen += lines[i].length + 1; if (index < seen) { line = i; break; } }
+        const character = index - lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0);
+        return new HelmfileHoverProvider(env).provideHover(doc, new vscode.Position(line, character)) as { contents: { value: string }[] } | null;
+    };
+    const hoverText = (hover: { contents: unknown } | null): string => {
+        if (!hover) return 'null';
+        const contents = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
+        return contents.map(c => (c && typeof c === 'object' && 'value' in c ? String((c as { value: string }).value) : String(c))).join('|');
+    };
+    const chartHover = hoverAt('{{ .Chart.Name }}', 8);
+    check('.Chart.Name hover documents builtin', chartHover != null && hoverText(chartHover).includes('Name of the chart'), hoverText(chartHover));
+    const valuesHover = hoverAt('{{ .Values.image.tag }}', 16);
+    check('.Values hover shows chart default', valuesHover != null && hoverText(valuesHover).includes('latest'), hoverText(valuesHover));
+    const functionHover = hoverAt('{{ toYaml .Values }}', 5);
+    check('function hover still works in chart templates', functionHover != null && !hoverText(functionHover).includes('values.yaml'), hoverText(functionHover));
+
+    // Diagnostics: chart templates skip state checks.
+    const { HelmfileDiagnostics } = require('../src/inspection') as typeof import('../src/inspection');
+    const diagnostics = new HelmfileDiagnostics(env);
+    const captured: unknown[] = [];
+    (diagnostics as unknown as { collection: { set: (uri: unknown, list: unknown[]) => void } }).collection = { set: (_uri, list) => captured.push(...list), delete: () => {}, clear: () => {}, dispose: () => {} };
+    // State-only content that would flag missing files in a state file.
+    const stateish = 'values:\n  - ./nope-missing.yaml\n';
+    diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => stateish } as never);
+    check('chart template skips state diagnostics', captured.length === 0, JSON.stringify(captured));
+    captured.length = 0;
+    const bad = '{{ .Values.x }\n';
+    diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => bad } as never);
+    check('chart template keeps template diagnostics', captured.length === 1, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+}
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);

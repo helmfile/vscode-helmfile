@@ -186,6 +186,29 @@ yaml.gotmpl,yml.gotmpl}` (sorted). Layouts the CLI would refuse to run
   `if` / `range` / `with` / `define` / `block` blocks, plus YAML syntax
   errors — each with quick fixes.
 
+### Chart directories
+
+Workspaces that keep Helm charts next to their helmfile state get
+chart-aware assistance inside `<chart>/templates/` files
+(`*.yaml`, `*.yml`, `*.tpl`, `NOTES.txt`, including subdirectories):
+
+- Chart template files are claimed by the Helmfile language, so YAML
+  validators no longer flag Go template actions (`{{ .Values.x }}`) as
+  invalid YAML, and template/YAML highlighting works everywhere.
+- Diagnostics switch to Helm template rules — unclosed actions, malformed
+  `{{ define }}`/`{{ range }}` blocks, YAML syntax — while Helmfile state
+  checks (repositories, unknown fields, missing files) stay silent.
+- Completion offers Helm's built-in variables (`.Chart.Name`,
+  `.Release.Namespace`, `.Capabilities.KubeVersion`, `.Files.Get`, …),
+  subchart names from `charts/`, and `.Values` keys from the chart's own
+  `values.yaml`.
+- Hover documents built-in variables and shows a key's chart default from
+  `values.yaml`.
+
+A directory is treated as a chart when it (or an ancestor, up to 16 levels)
+contains `Chart.yaml` / `Chart.yml`. Helmfile state files inside a chart
+keep their state treatment.
+
 ### Chart repositories
 
 - HTTP(S) repositories download `index.yaml` only; OCI repositories use

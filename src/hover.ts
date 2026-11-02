@@ -3,10 +3,11 @@
  */
 import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
+import { chartBuiltinOf, chartFileOf, chartTemplateContextFor, chartValuePreview, CHART_BUILTIN_TOKEN, type ChartTemplateContext } from './chartContext';
 import { findFunction, functionMarkdown } from './functionCatalog';
 import { ancestors, pairKeyAt, parseTree } from './yamlTree';
 import { schemaContext, schemaFields } from './schema';
-import { allDefinitions, type ValuesDefinition } from './values';
+import { allDefinitions, contentStamp, type ValuesDefinition } from './values';
 import { EnvironmentService } from './settings';
 import { valuePathAt } from './references';
 import { offsetRange } from './position';
@@ -15,6 +16,14 @@ import { evaluateExpressionAt, type EvaluatedExpression } from './environmentInf
 /** Identifiers inside actions that carry documentation. */
 const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/g;
 
+function builtinPathAt(text: string, offset: number): { text: string; start: number; end: number } | null {
+    for (const match of matchAll(CHART_BUILTIN_TOKEN, text)) {
+        if (offset < (match.index ?? 0) || offset > (match.index ?? 0) + match[0].length) continue;
+        return { text: match[0].slice(1), start: match.index ?? 0, end: (match.index ?? 0) + match[0].length };
+    }
+    return null;
+}
+
 export class HelmfileHoverProvider implements vscode.HoverProvider {
     constructor(private readonly env: EnvironmentService) {}
 
@@ -22,6 +31,15 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
         const text = document.getText();
         const offset = document.offsetAt(position);
         const uri = document.uri;
+
+        // Chart template files: built-in Helm variables and the chart's own
+        // values.yaml defaults — never Helmfile state values, even when a
+        // state file sits above the chart. Function identifiers keep their
+        // catalog documentation.
+        const chartTemplate = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        if (chartTemplate) {
+            return this.chartTemplateHover(text, offset, chartTemplate) ?? this.functionHover(text, offset);
+        }
 
         // 1. Values path under the cursor: resolved value + source + environment.
         const valuePath = valuePathAt(text, offset);
@@ -34,18 +52,12 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
 
         // 2. Go/Sprig/Helmfile function identifier inside an action; any
         // other position in an action falls through to computed values.
+        const functionDoc = this.functionHover(text, offset);
+        if (functionDoc) return functionDoc;
+
+        // 3. Statically computed value of the surrounding expression.
         const action = TemplateScanner.at(text, offset);
         if (action) {
-            const body = text.slice(action.bodyStart, action.bodyEnd);
-            const bodyOffset = offset - action.bodyStart;
-            const word = identifierAt(body, bodyOffset);
-            const func = word ? findFunction(word.text) : null;
-            if (func && word) {
-                const range = offsetRange(text, action.bodyStart + word.start, action.bodyStart + word.start + word.text.length);
-                return new vscode.Hover(functionMarkdown(func), range);
-            }
-
-            // 3. Statically computed value of the surrounding expression.
             const evaluated = evaluateExpressionAt({ uri, text, tree: parseTree(text) }, offset, this.env.get());
             if (evaluated) {
                 return new vscode.Hover(computedValueMarkdown(evaluated, this.env.get()), offsetRange(text, evaluated.start, evaluated.end));
@@ -53,7 +65,7 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
             return null;
         }
 
-        // 3. Mapping key: Helmfile schema field description.
+        // 4. Mapping key: Helmfile schema field description.
         const tree = parseTree(text);
         const pair = pairKeyAt(tree, offset);
         if (pair && offset >= pair.keyStart && offset <= pair.keyEnd) {
@@ -62,6 +74,41 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
             if (field) {
                 const range = offsetRange(text, pair.keyStart, pair.keyEnd);
                 return new vscode.Hover(new vscode.MarkdownString(`**${field.name}** \`${field.type}\`\n\n${field.description}`), range);
+            }
+        }
+        return null;
+    }
+
+    /** Go/Sprig/Helmfile function identifier inside an action. */
+    private functionHover(text: string, offset: number): vscode.Hover | null {
+        const action = TemplateScanner.at(text, offset);
+        if (!action) return null;
+        const body = text.slice(action.bodyStart, action.bodyEnd);
+        const word = identifierAt(body, offset - action.bodyStart);
+        if (!word) return null;
+        const func = findFunction(word.text);
+        if (!func) return null;
+        const range = offsetRange(text, action.bodyStart + word.start, action.bodyStart + word.start + word.text.length);
+        return new vscode.Hover(functionMarkdown(func), range);
+    }
+
+    /** Built-in Helm template variables + chart values.yaml defaults. */
+    private chartTemplateHover(text: string, offset: number, context: ChartTemplateContext): vscode.Hover | null {
+        const valuePath = valuePathAt(text, offset);
+        if (valuePath) {
+            const preview = chartValuePreview(context, valuePath.key);
+            const display = valuePath.key.split('\u001f').join('.');
+            const body = preview === null
+                ? `**${display}** — no default in \`${context.name}\`'s values.yaml.`
+                : `**${display}** — chart default\n\n\`\`\`yaml\n${preview}\n\`\`\`\nFrom \`${context.name}\`'s values.yaml.`;
+            return new vscode.Hover(new vscode.MarkdownString(body), valuePath.range);
+        }
+        const builtin = builtinPathAt(text, offset);
+        if (builtin) {
+            const entry = chartBuiltinOf(builtin.text);
+            if (entry) {
+                const range = offsetRange(text, builtin.start, builtin.end);
+                return new vscode.Hover(new vscode.MarkdownString(`**.${entry.path}** \`${entry.detail}\`\n\n${entry.documentation}`), range);
             }
         }
         return null;

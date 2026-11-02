@@ -7,8 +7,9 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
+import { chartFileOf, chartTemplateContextFor } from './chartContext';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
-import { isHelmfileName, type SourceFile } from './values';
+import { contentStamp, isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
 import { repositoryService } from './repositoryService';
@@ -63,10 +64,16 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     analyze(document: vscode.TextDocument): void {
         const text = document.getText();
         const diagnostics: vscode.Diagnostic[] = [];
-        const source: SourceFile = { uri: document.uri, text, tree: parseTree(text) };
         yamlSyntaxErrors(document, diagnostics);
         unclosedActions(text, diagnostics);
         templateBlocks(text, diagnostics);
+        // Chart template files are Helm templates, not Helmfile state:
+        // only template/YAML checks apply.
+        if (chartTemplateContextFor(chartFileOf(document.uri), contentStamp())) {
+            this.collection.set(document.uri, diagnostics);
+            return;
+        }
+        const source: SourceFile = { uri: document.uri, text, tree: parseTree(text) };
         repositoryDiagnostics(source, this.env.get(), diagnostics);
         unknownFieldDiagnostics(source, diagnostics);
         missingFileDiagnostics(source, this.env.get(), diagnostics);

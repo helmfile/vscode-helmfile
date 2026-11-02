@@ -4,6 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
+import { chartFileOf, chartTemplateContextFor } from './chartContext';
 import { offsetRange } from './position';
 import { nodeAt, pairKeyAt, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
 import { allDefinitions, contentStamp, isHelmfileName, readSource, resolveValueFiles, valuesKeyPath, type SourceFile, type ValuesDefinition } from './values';
@@ -59,6 +60,10 @@ export class HelmfileDefinitionProvider implements vscode.DefinitionProvider {
         const offset = document.offsetAt(position);
         const uri = document.uri;
 
+        // Chart template files: values live in the chart's values.yaml, not
+        // the Helmfile state (which may sit above the chart).
+        if (chartTemplateContextFor(chartFileOf(uri), contentStamp())) return null;
+
         // 1. Values paths inside Go template actions.
         const valuePath = valuePathAt(text, offset);
         if (valuePath) {
@@ -99,6 +104,9 @@ export class HelmfileReferencesProvider implements vscode.ReferenceProvider {
         const offset = document.offsetAt(position);
         const text = document.getText();
         const source: SourceFile = { uri, text, tree: parseTree(text) };
+
+        // Chart template files: no Helmfile state navigation.
+        if (chartTemplateContextFor(chartFileOf(uri), contentStamp())) return [];
 
         // Repository name declaration → chart usages.
         const key = pairKeyAt(source.tree, offset);

@@ -158,6 +158,23 @@ Host),自带 `examples/` 下的示例状态文件。
 - 未闭合 / 空 / 孤立的 Go 模板定界符与不匹配的 `if` / `range` / `with` /
   `define` / `block` 块,以及 YAML 语法错误——均带快速修复。
 
+### Chart 目录
+
+在 helmfile 状态文件旁存放 Helm chart 的工作区,`<chart>/templates/` 下的文件
+(`*.yaml`、`*.yml`、`*.tpl`、`NOTES.txt`,含子目录)会获得 chart 感知能力:
+
+- chart 模板文件由 Helmfile 语言接管,YAML 校验器不再把 Go 模板动作
+  (`{{ .Values.x }}`)当成非法 YAML,高亮全面生效。
+- 诊断切换为 Helm 模板规则 —— 未闭合动作、非法 `{{ define }}`/`{{ range }}`
+  块、YAML 语法 —— 而 Helmfile 状态检查(仓库、未知字段、缺失文件)保持静默。
+- 补全提供 Helm 内置变量(`.Chart.Name`、`.Release.Namespace`、
+  `.Capabilities.KubeVersion`、`.Files.Get` 等)、`charts/` 下的子 chart 名,以及
+  来自 chart 自身 `values.yaml` 的 `.Values` 键。
+- Hover 展示内置变量文档,并显示键在 `values.yaml` 中的默认值。
+
+当目录(或其祖先,最多向上 16 层)包含 `Chart.yaml` / `Chart.yml` 时被视为
+chart。chart 内的 Helmfile 状态文件仍按状态文件处理。
+
 ### Chart 仓库
 
 - HTTP(S) 仓库只下载 `index.yaml`;OCI 仓库使用分页 tag 列表与 Bearer 认证。
