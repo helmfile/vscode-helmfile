@@ -3,7 +3,7 @@
     "displayName": "Helmfile",
     "description": "Helmfile state file editing: completion, navigation, repository awareness, environments, and Template/Diff/Apply/Destroy",
     "version": "0.3.0",
-    "publisher": "helmfile-dev",
+    "publisher": "helmfile",
     "license": "MIT",
     "repository": {
         "type": "git",
