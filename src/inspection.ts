@@ -104,6 +104,42 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     }
 }
 
+/** Quoted scalar spans (single/double, YAML escapes, line-scoped). */
+function quotedSpans(text: string): Array<[number, number]> {
+    const spans: Array<[number, number]> = [];
+    let quote: '\'' | '"' | null = null;
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (char === '\n') {
+            // Unbalanced quote on a line must not leak into the next one.
+            if (quote !== null) spans.push([start, i]);
+            quote = null;
+            continue;
+        }
+        if (quote === '\'') {
+            if (char === '\'') {
+                if (text[i + 1] === '\'') { i++; continue; } // '' escapes a quote
+                spans.push([start, i + 1]);
+                quote = null;
+            }
+        } else if (quote === '"') {
+            if (char === '\\') { i++; continue; }
+            if (char === '"') { spans.push([start, i + 1]); quote = null; }
+        } else if (char === '\'' || char === '"') {
+            // Quotes start scalars after delimiters; a mid-word apostrophe
+            // (`it's`) must not open a span.
+            const prev = i === 0 ? '\n' : text[i - 1];
+            if (prev === ' ' || prev === '\t' || prev === ':' || prev === '-' || prev === '[' || prev === '{' || prev === ',' || prev === '(' || prev === '=') {
+                quote = char;
+                start = i;
+            }
+        }
+    }
+    if (quote !== null) spans.push([start, text.length]);
+    return spans;
+}
+
 export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]): void {
     const actions = TemplateScanner.scan(text);
     for (const action of actions) {
@@ -125,9 +161,14 @@ export function unclosedActions(text: string, diagnostics: vscode.Diagnostic[]):
     // Orphan closers: a "}}" outside any action span almost always means the
     // opening "{{" was deleted, so Go templates treat the leftover text as a
     // literal value (e.g. `routerInstances:  .Values | get "x" 2 }}`).
+    // `}}` inside a quoted scalar is literal text (e.g. a dockerconfigjson
+    // blob), never a template closer.
+    const quotes = quotedSpans(text);
+    const inQuotes = (offset: number) => quotes.some(([start, end]) => offset >= start && offset < end);
     let covered = 0;
     for (let i = 0; i + 1 < text.length; i++) {
         if (text[i] !== '}' || text[i + 1] !== '}') continue;
+        if (inQuotes(i)) { i++; continue; }
         while (covered < actions.length && actions[covered].end <= i) covered++;
         if (covered < actions.length && i >= actions[covered].start) continue;
         diagnostics.push(

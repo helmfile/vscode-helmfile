@@ -368,6 +368,11 @@ entries:
     eq(actions('a: {{ .x }}').length, 0, 'closed actions add no orphan warnings');
     eq(actions('{{ if .x }} tail }}').length, 1, '}} outside action span flagged once');
     eq(actions('}}}').length, 1, 'triple brace flagged once');
+    const docker = `dockerconfigjson: '{"auths":{"xxxx":{"username":"xxxx","password":"xxxx","auth":"xxxx"}}}'`;
+    eq(actions(docker).length, 0, 'json blob }} inside single quotes ignored');
+    eq(actions('cfg: "a}}"').length, 0, '}} inside double quotes ignored');
+    eq(actions('quoted: \'}}\' after }}').length, 1, '}} after closing quote still flagged');
+    eq(actions("it\'s ok }}").length, 1, 'apostrophe does not open a quote span');
     const blocks = (text: string): { message: string }[] => {
         const out: { message: string }[] = [];
         templateBlocks(text, out as vscode.Diagnostic[]);

@@ -26,7 +26,7 @@ async function main(): Promise<void> {
     check('languageId=helmfile', doc.languageId === 'helmfile', `got '${doc.languageId}'`);
 
     // 1. Extension activated.
-    const ext = vscode.extensions.getExtension('helmfile-dev.vscode-helmfile');
+    const ext = vscode.extensions.getExtension('helmfile.vscode-helmfile');
     if (ext && !ext.isActive) {
         try { await ext.activate(); } catch (e) { log('activate() threw: ' + String(e)); }
     }
