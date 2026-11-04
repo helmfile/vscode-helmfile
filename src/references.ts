@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { TemplateScanner } from './templateScanner';
 import { chartFileOf, chartTemplateContextFor, chartTemplateDetected } from './chartContext';
 import { chartCallsFor, chartDefinesFor, templateCallAt } from './chartDefines';
+import { chartModelFor } from './chartModel';
 import type { ChartTemplateContext } from './chartContext';
 import { offsetRange } from './position';
 import { nodeAt, pairKeyAt, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
@@ -68,10 +69,20 @@ export class HelmfileDefinitionProvider implements vscode.DefinitionProvider {
         const chartTemplate = chartTemplateContextFor(chartFileOf(uri), contentStamp());
         if (chartTemplate) {
             const call = templateCallAt(text, offset);
-            if (!call) return null;
-            const define = chartDefinesFor(chartTemplate, contentStamp(), { file: uri.fsPath, text })
-                .find(candidate => candidate.name === call.name);
-            return define ? locationAt(define.file, define.start) : null;
+            if (call) {
+                const define = chartDefinesFor(chartTemplate, contentStamp(), { file: uri.fsPath, text })
+                    .find(candidate => candidate.name === call.name);
+                return define ? locationAt(define.file, define.start) : null;
+            }
+            // `.Values.x` → the file+line the effective value was last written
+            // at: the chart's values.yaml or the helmfile state above it.
+            const valuePath = valuePathAt(text, offset);
+            if (valuePath) {
+                const segments = valuePath.key.split('\u001f').filter(segment => segment.length > 0);
+                const origin = chartModelFor(chartTemplate, contentStamp(), this.env.get()).originAt(segments);
+                if (origin) return locationAt(origin.file, origin.offset);
+            }
+            return null;
         }
         if (chartTemplateDetected(chartFileOf(uri), contentStamp())) return null;
 

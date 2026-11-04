@@ -225,7 +225,12 @@ chart-aware assistance inside `<chart>/templates/` files
   (or, for `Glob`, the list of matching files).
 - Inside `range` / `with` blocks, relative `.field` paths complete
   against the iterated value — including element keys when ranging over
-  a list of objects.
+  a list of objects. Range variables work too: `$` completes the
+  variables declared by enclosing blocks (`$i`, `$v`), `$v.` completes
+  the element's keys, and hovering `$v` / `$v.field` shows what the
+  binding refers to (collection preview, resolved value, or the union of
+  element keys when items vary). Innermost binding wins, matching Go
+  template scoping.
 - `include "…"` / `template "…"` complete named template (`define`)
   names across all files under `templates/`, and calling a name with no
   matching `define` produces a warning with a **Create define** quick
@@ -246,7 +251,10 @@ chart-aware assistance inside `<chart>/templates/` files
   `range` elements.
 - Go-to-definition and find-references navigate between `include` /
   `template` calls and their `define` declarations; the outline shows
-  `define` declarations as symbols.
+  `define` declarations as symbols. On a `.Values.<key>` reference,
+  go-to-definition jumps to **where the effective value comes from**:
+  the exact `key:` line in the chart's `values.yaml`, in an overlay
+  values file, or at the `set:` entry in `helmfile.yaml`.
 - Signature help shows catalog function parameters while typing
   space-separated calls (`include "name" `), and snippet completions
   cover `range` / `with` / `if` / `include` / `define` / `block`.

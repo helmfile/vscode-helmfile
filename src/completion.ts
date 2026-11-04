@@ -15,7 +15,7 @@ import { completionPath, schemaContext, schemaFields, type Field } from './schem
 import { chartTemplateContextFor, chartTemplateDetected, chartFileOf, CHART_BUILTIN_SUFFIX, CHART_BUILTINS, CHART_ROOT_PATHS, type ChartTemplateContext } from './chartContext';
 import { chartModelFor, iterationBaseModel, subchartModel, type ChartKey } from './chartModel';
 import { chartDefinesFor } from './chartDefines';
-import { enclosingIteration } from './chartIteration';
+import { enclosingIteration, variableBindings } from './chartIteration';
 import { snippetsFor } from './templateSnippets';
 import { childKeys, contentStamp, SEPARATOR, valuesModel, type SourceFile, type ValuesDefinition } from './values';
 import { repositoryDownloadsEnabled } from './settings';
@@ -207,20 +207,30 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         if (chartTemplate) {
             const typed = wordMatch ? wordMatch[0] : '';
             const dollar = typed.startsWith('$');
-            const labelPrefix = dollar ? '$.' : '.';
-            for (const root of CHART_ROOT_PATHS) {
-                const label = labelPrefix + root;
-                const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Variable);
-                item.detail = 'Helm template variable';
-                item.insertText = label;
-                item.range = replace;
-                items.push(item);
-            }
-            // Inside `range`/`with`, `.` refers to the iterated element: offer
-            // its keys for relative paths (`.field`) that are not root names.
-            if (!dollar && /^\.[A-Za-z0-9_.]*$/.test(typed)) {
-                const { parent, partial } = splitPartial(typed.slice(1));
-                this.iterationCompletions(text, offset, chartTemplate, parent, partial, items);
+            // `$var.` — keys of the element/value the innermost binding holds.
+            const varMatch = /^(\$[A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_.]*)$/.exec(typed);
+            if (varMatch) {
+                this.variableCompletions(text, offset, chartTemplate, varMatch[1], varMatch[2], items);
+            } else {
+                if (!/^\$[A-Za-z_]/.test(typed)) {
+                    const labelPrefix = dollar ? '$.' : '.';
+                    for (const root of CHART_ROOT_PATHS) {
+                        const label = labelPrefix + root;
+                        const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Variable);
+                        item.detail = 'Helm template variable';
+                        item.insertText = label;
+                        item.range = replace;
+                        items.push(item);
+                    }
+                }
+                // Declared `$var` names of enclosing range/with blocks.
+                if (dollar) this.variableNameCompletions(text, offset, typed, replace, items);
+                // Inside `range`/`with`, `.` refers to the iterated element: offer
+                // its keys for relative paths (`.field`) that are not root names.
+                if (!dollar && /^\.[A-Za-z0-9_.]*$/.test(typed)) {
+                    const { parent, partial } = splitPartial(typed.slice(1));
+                    this.iterationCompletions(text, offset, chartTemplate, parent, partial, items);
+                }
             }
         } else if (!chartDetected) {
             for (const path of CONTEXT_PATHS) {
@@ -311,6 +321,49 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
             items.push(item);
         }
         return new vscode.CompletionList(items, false);
+    }
+
+    /**
+     * `$var.` — keys of the value the innermost binding of `$var` refers to:
+     * the element of its `range`, or the narrowed value of its `with`.
+     */
+    private variableCompletions(text: string, offset: number, context: ChartTemplateContext, name: string, rest: string, items: vscode.CompletionItem[]): void {
+        const binding = [...variableBindings(text, offset)].reverse().find(candidate => candidate.name === name);
+        if (!binding || binding.role === 'index') return; // the index/key is a scalar
+        const base = iterationBaseModel(binding.path, context, contentStamp(), this.env());
+        if (!base) return;
+        const info = base.model.valueAt(base.segments);
+        if (!info) return;
+        const { parent, partial } = splitPartial(rest);
+        // `range` over a list iterates elements; a `with` variable narrows to
+        // the value itself.
+        const keys = parent.length === 0 && binding.role === 'element' && info.kind === 'list'
+            ? base.model.elementKeys(base.segments)
+            : base.model.keysUnder([...base.segments, ...parent]);
+        for (const key of keys) {
+            if (!key.key.startsWith(partial)) continue;
+            const item = new vscode.CompletionItem(key.key, vscode.CompletionItemKind.Variable);
+            item.detail = key.source ?? 'list element';
+            if (key.description) item.documentation = new vscode.MarkdownString(key.description);
+            item.insertText = key.key;
+            item.range = offsetRange(text, offset - partial.length, offset);
+            items.push(item);
+        }
+    }
+
+    /** Names of `$var`s declared by enclosing `range`/`with` headers. */
+    private variableNameCompletions(text: string, offset: number, typed: string, replace: vscode.Range, items: vscode.CompletionItem[]): void {
+        const seen = new Set<string>();
+        for (const binding of [...variableBindings(text, offset)].reverse()) {
+            if (seen.has(binding.name) || !binding.name.startsWith(typed)) continue;
+            seen.add(binding.name);
+            const item = new vscode.CompletionItem(binding.name, vscode.CompletionItemKind.Variable);
+            const roleText = binding.role === 'index' ? 'index' : binding.role === 'element' ? 'element' : 'value';
+            item.detail = `${binding.keyword} ${roleText} · ${binding.path}`;
+            item.insertText = binding.name;
+            item.range = replace;
+            items.push(item);
+        }
     }
 
     /**

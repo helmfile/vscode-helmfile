@@ -163,7 +163,7 @@ async function main(): Promise<void> {
         'releases:\n  - name: demo\n    chart: ./charts/demo\n    values:\n      - ./demo-values.yaml\n    set:\n      - name: replicaCount\n        value: 3\n');
     fs2.writeFileSync(path.join(chartWs, 'demo-values.yaml'), 'image:\n  tag: overlay-tag\nsidecar:\n  port: 7070\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'Chart.yaml'), 'apiVersion: v2\nname: demo\nversion: 0.1.0\n');
-    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'values.yaml'), 'image:\n  repository: nginx\n  tag: default-tag\n');
+    fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'values.yaml'), 'image:\n  repository: nginx\n  tag: default-tag\nports:\n  - name: http\n    port: 80\n  - name: https\n    port: 443\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'values.schema.json'), JSON.stringify({
         properties: { image: { type: 'object', properties: { repository: { type: 'string' }, tag: { type: 'string' } }, additionalProperties: false } },
     }, null, 2));
@@ -270,6 +270,24 @@ async function main(): Promise<void> {
         const chartYamlLabels = (chartYamlItems?.items ?? []).map(i => typeof i.label === 'string' ? i.label : String((i.label as { label: string }).label));
         check('Chart.yaml dependency name completion', chartYamlLabels.includes('sidecar'), `labels=${chartYamlLabels.slice(0, 6).join(',')}`);
         void chartYamlDoc;
+
+        // Value provenance jump-to-source (define/origin navigation).
+        const tagOffset = cdoc.getText().indexOf('.Values.replicaCount');
+        const originDefs = (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', chartUri, cdoc.positionAt(tagOffset + 2))) as vscode.Location[];
+        const originFiles = (originDefs ?? []).map(l => l.uri.fsPath);
+        check('values origin jumps to state set entry', originFiles.some(f => f.endsWith('helmfile.yaml')), JSON.stringify(originFiles));
+
+        // Iteration variable awareness: completion + hover.
+        const varLabels = await chartCompleteAt('{{ range $i, $p := .Values.ports }}{{ $p.');
+        check('iteration variable completes element keys', varLabels.includes('name') && varLabels.includes('port'), `labels=${varLabels.slice(0, 6).join(',')}`);
+        const varScratch = path.join(chartWs, 'charts', 'demo', 'templates', `complete-probe-${probeIndex++}.yaml`);
+        fs2.writeFileSync(varScratch, '{{ range $i, $p := .Values.ports }}{{ $p }}{{ end }}\n');
+        const varDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(varScratch));
+        const varHoverOffset = varDoc.getText().indexOf('$p }}');
+        const varHovers = (await vscode.commands.executeCommand('vscode.executeHoverProvider', vscode.Uri.file(varScratch), varDoc.positionAt(varHoverOffset + 1))) as vscode.Hover[];
+        const varHoverText = (varHovers ?? []).map(h => (h.contents as { value?: string }[]).map(c => c.value ?? '').join(' ')).join(' || ');
+        check('iteration variable hover shows collection', varHoverText.includes('element of') && varHoverText.includes('ports'), varHoverText.slice(0, 160));
+        void varDoc;
     } finally {
         fs2.rmSync(chartWs, { recursive: true, force: true });
     }
