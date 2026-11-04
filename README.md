@@ -2,7 +2,26 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Helmfile state file support for VSCode, ported from the
+**Helmfile for Visual Studio Code** turns `helmfile.yaml` and the Helm
+charts it deploys into first-class code: schema-aware completion and
+validation, Go template intelligence (diagnostics, hover docs,
+highlighting), jump-to-source for values — including the *effective*
+values resolved from chart defaults, overlay files and `set:` entries —
+and one-click `template` / `diff` / `apply` / `destroy` per release.
+Everything works statically, no cluster required.
+
+At a glance:
+
+- **helmfile.yaml** — field / chart / repository / values / environment
+  completion, unknown-field & missing-file validation, environment
+  switching
+- **Helm charts** — effective-values completion, `values.schema.json`
+  checking, `$var` & `range` awareness, `include`/`define` navigation,
+  `helm template` lens
+- **Operations** — per-release `template` / `diff` / `apply` / `destroy`
+  with diff review, all static, no cluster needed
+
+Originally ported from the
 [helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
 with feature parity.
 
