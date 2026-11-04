@@ -2,9 +2,23 @@
 
 [English](README.md) | 简体中文
 
-面向 VSCode 的 Helmfile 状态文件支持,自
-[helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
-移植而来,功能对齐。
+**Helmfile for Visual Studio Code** 把 `helmfile.yaml` 和它部署的 Helm
+chart 变成一等代码：模式感知的补全与校验、Go 模板智能诊断（悬停文档、
+高亮）、值跳转到源（包括从 chart 默认值、覆盖文件和 `set:` 条目解析出的
+**生效值**），以及每个 release 一键 `template` / `diff` / `apply` /
+`destroy`。全部静态分析，无需集群。
+
+一览：
+
+- **helmfile.yaml** —— 字段 / chart / 仓库 / values / 环境补全，未知字段与
+  缺失文件校验，环境切换
+- **Helm chart** —— 生效值补全、`values.schema.json` 检查、`$var` 与
+  `range` 感知、`include`/`define` 跳转、`helm template` Code Lens
+- **操作** —— 按 release 执行 `template` / `diff` / `apply` / `destroy`，
+  带 diff 审阅，全程静态、无需集群
+
+自 [helmfile-intellij-plugin](https://github.com/k3rnL/helmfile-intellij-plugin)
+移植而来，功能对齐。
 
 ![Chart 能力演示](docs/demo-chart.gif)
 
