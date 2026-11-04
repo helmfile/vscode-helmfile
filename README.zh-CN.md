@@ -186,7 +186,9 @@ Host),自带 `examples/` 下的示例状态文件。
 - `.Files.Get "…"` / `.Files.Glob "…"` 补全 chart 根下的文件路径;悬停引号内
   的路径可预览文件内容(`Glob` 则列出匹配文件)。
 - `range` / `with` 块内,相对路径 `.field` 基于被迭代的值补全 —— 遍历对象列表时
-  直接补全元素键。
+  直接补全元素键。迭代变量同样支持:单独的 `$` 补全外层块声明的变量名(`$i`、
+  `$v`),`$v.` 补全元素键;悬停 `$v` / `$v.field` 展示绑定指向的内容(集合预览、
+  解析后的值,或元素各异的字段键列表),内层绑定优先,遵循 Go 模板作用域。
 - `include "…"` / `template "…"` 跨 `templates/` 全部文件补全命名模板
   (`define`)名;调用了不存在的命名模板会给出警告,并提供 **Create define**
   快速修复 —— 在 `_helpers.tpl` 末尾追加骨架(文件不存在时一并创建)。
@@ -200,7 +202,9 @@ Host),自带 `examples/` 下的示例状态文件。
 - Hover 展示内置变量文档、预览生效值(含来源与 `values.schema.json` 描述)、
   展开 `include` 背后的 `define` 内容,以及 `range` 元素字段的解析结果。
 - 转到定义 / 查找引用在 `include`/`template` 调用与 `define` 声明之间跳转;
-  大纲中显示 `define` 声明符号。
+  对 `.Values.<key>` 引用,转到定义直接跳到**生效值的来源**:chart
+  `values.yaml`、覆盖 values 文件中对应的 `key:` 行,或 `helmfile.yaml` 里的
+  `set:` 条目;大纲中显示 `define` 声明符号。
 - 函数调用支持签名帮助(空格分隔参数风格,如 `include "name" `),代码片段
   补全覆盖 `range` / `with` / `if` / `include` / `define` / `block`。
 

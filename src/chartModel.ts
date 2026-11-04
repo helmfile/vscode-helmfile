@@ -29,6 +29,12 @@ export interface ChartValueInfo {
     readonly source: string;
 }
 
+/** Where an effective value was written: the file and the offset of its key. */
+export interface ChartValueOrigin {
+    readonly file: string;
+    readonly offset: number;
+}
+
 export interface ChartModel {
     readonly chart: string;
     /** Effective child keys under a dotted path (merged values + schema-only keys). */
@@ -43,6 +49,9 @@ export interface ChartModel {
      * false` at a strict parent that does not declare the key), or null
      * when the schema allows or does not cover the path. */
     schemaRejects(segments: readonly string[]): string | null;
+    /** File and key offset the effective value at a dotted path was last
+     * written at (chart values.yaml or a helmfile state file), or null. */
+    originAt(segments: readonly string[]): ChartValueOrigin | null;
     /** Files reachable via `.Files` (relative, `/`-separated, templates/ excluded). */
     readonly files: readonly string[];
 }
@@ -89,6 +98,7 @@ interface ParentOverlay {
     /** The parent's effective values record and per-path sources. */
     readonly values: Record<string, unknown>;
     readonly sources: ReadonlyMap<string, string>;
+    readonly locations: ReadonlyMap<string, ChartValueOrigin>;
 }
 
 /**
@@ -105,7 +115,7 @@ export function subchartModel(parent: ChartTemplateContext, name: string, stamp:
     if (!entry || entry.stamp !== stamp || entry.env !== environment) {
         const context: ChartTemplateContext = { root, name, valuesTree: readYamlTree(path.join(root, 'values.yaml')), subcharts: [] };
         const from = mergedValues(parent, environment);
-        entry = { stamp, env: environment, value: buildModel(context, environment, { key: name, values: from.values, sources: from.sources }) };
+        entry = { stamp, env: environment, value: buildModel(context, environment, { key: name, values: from.values, sources: from.sources, locations: from.locations }) };
         if (memos.size >= MEMO_LIMIT) memos.delete(memos.keys().next().value as string); // evict oldest
         memos.set(memoKey, entry);
     }
@@ -117,16 +127,17 @@ export function subchartModel(parent: ChartTemplateContext, name: string, stamp:
 function buildModel(context: ChartTemplateContext, environment: string, parent?: ParentOverlay): ChartModel {
     const values: Record<string, unknown> = {};
     const sources = new Map<string, string>();
+    const locations = new Map<string, ChartValueOrigin>();
     const schema = readSchema(context.root);
 
-    applyTree(values, sources, context.valuesTree, `${context.name} values.yaml`);
-    applyStateOverlay(context.root, values, sources, environment);
+    applyTree(values, sources, locations, context.valuesTree, `${context.name} values.yaml`, path.join(context.root, 'values.yaml'));
+    applyStateOverlay(context.root, values, sources, locations, environment);
     if (parent) {
         const overlay = parent.values[parent.key];
         // A scalar/array under the dependency key cannot merge into the
         // subchart's map-shaped values; skip that pathological case.
         if (typeof overlay === 'object' && overlay !== null && !Array.isArray(overlay)) {
-            applyParentOverlay(values, sources, overlay as Record<string, unknown>, [parent.key], parent.sources);
+            applyParentOverlay(values, sources, locations, overlay as Record<string, unknown>, [parent.key], parent.sources, parent.locations);
         }
     }
 
@@ -137,23 +148,25 @@ function buildModel(context: ChartTemplateContext, environment: string, parent?:
         elementKeys: segments => elementKeys(values, sources, schema, segments),
         schemaDescriptionAt: segments => schemaAt(schema, segments)?.description ?? null,
         schemaRejects: segments => schemaRejects(schema, segments),
+        originAt: segments => originAt(locations, segments),
         files: listFiles(context.root),
     };
 }
 
 /** Chart defaults + helmfile overlay of a context, without building the full model. */
-function mergedValues(context: ChartTemplateContext, environment: string): { values: Record<string, unknown>; sources: Map<string, string> } {
+function mergedValues(context: ChartTemplateContext, environment: string): { values: Record<string, unknown>; sources: Map<string, string>; locations: Map<string, ChartValueOrigin> } {
     const values: Record<string, unknown> = {};
     const sources = new Map<string, string>();
-    applyTree(values, sources, context.valuesTree, `${context.name} values.yaml`);
-    applyStateOverlay(context.root, values, sources, environment);
-    return { values, sources };
+    const locations = new Map<string, ChartValueOrigin>();
+    applyTree(values, sources, locations, context.valuesTree, `${context.name} values.yaml`, path.join(context.root, 'values.yaml'));
+    applyStateOverlay(context.root, values, sources, locations, environment);
+    return { values, sources, locations };
 }
 
 /** Chart defaults from the parsed values.yaml. */
-function applyTree(values: Record<string, unknown>, sources: Map<string, string>, tree: YTree | null, label: string): void {
+function applyTree(values: Record<string, unknown>, sources: Map<string, string>, locations: Map<string, ChartValueOrigin>, tree: YTree | null, label: string, file: string): void {
     const root = rootMapping(tree);
-    if (root) overlayMapping(values, sources, root, [], label);
+    if (root) overlayMapping(values, sources, locations, root, [], label, file);
 }
 
 /**
@@ -162,7 +175,7 @@ function applyTree(values: Record<string, unknown>, sources: Map<string, string>
  * `values:` files and inline maps, then its `set:`/`setString:` entries —
  * matching helmfile's precedence (later wins).
  */
-function applyStateOverlay(chartRoot: string, values: Record<string, unknown>, sources: Map<string, string>, environment: string): void {
+function applyStateOverlay(chartRoot: string, values: Record<string, unknown>, sources: Map<string, string>, locations: Map<string, ChartValueOrigin>, environment: string): void {
     const state = stateFor(vscode.Uri.file(path.join(chartRoot, 'Chart.yaml')));
     if (!state) return;
     const stateDir = path.dirname(state.uri.fsPath);
@@ -176,12 +189,13 @@ function applyStateOverlay(chartRoot: string, values: Record<string, unknown>, s
             if (!chartText || !chartText.startsWith('.') && !chartText.startsWith('/')) return;
             if (path.resolve(stateDir, chartText) !== chartRoot) return;
             const mapping = pair.parent;
-            if (mapping && mapping.kind === 'mapping') applyRelease(state, mapping, stateDir, values, sources, environment);
+            if (mapping && mapping.kind === 'mapping') applyRelease(state, mapping, stateDir, values, sources, locations, environment);
         });
     }
 }
 
-function applyRelease(state: SourceFile, mapping: YMapping, stateDir: string, values: Record<string, unknown>, sources: Map<string, string>, environment: string): void {
+function applyRelease(state: SourceFile, mapping: YMapping, stateDir: string, values: Record<string, unknown>, sources: Map<string, string>, locations: Map<string, ChartValueOrigin>, environment: string): void {
+    const stateFile = state.uri.fsPath;
     const valuesPair = mappingGet(mapping, 'values');
     if (valuesPair?.value && valuesPair.value.kind === 'sequence') {
         for (const item of (valuesPair.value as YSequence).items) {
@@ -190,10 +204,10 @@ function applyRelease(state: SourceFile, mapping: YMapping, stateDir: string, va
                 for (const uri of resolveValueFiles(state, raw, environment)) {
                     const target = readSource(uri);
                     const root = target ? rootMapping(target.tree) : null;
-                    if (root) overlayMapping(values, sources, root, [], labelFor(raw, stateDir));
+                    if (root) overlayMapping(values, sources, locations, root, [], labelFor(raw, stateDir), uri.fsPath);
                 }
             } else if (item.kind === 'mapping') {
-                overlayMapping(values, sources, item, [], 'values (inline)');
+                overlayMapping(values, sources, locations, item, [], 'values (inline)', stateFile);
             }
         }
     }
@@ -207,13 +221,14 @@ function applyRelease(state: SourceFile, mapping: YMapping, stateDir: string, va
             if (!name) continue;
             const segments = name.split('.').filter(segment => segment.length > 0);
             const label = `${field}: ${name}`;
+            const origin: ChartValueOrigin = { file: stateFile, offset: namePair ? namePair.keyStart : entry.start };
             const valuePair = mappingGet(entry, 'value');
             const value = valuePair?.value ? toPlain(valuePair.value) : undefined;
             const nested = mappingGet(entry, 'values');
             if (nested?.value && nested.value.kind === 'mapping') {
-                overlayMapping(values, sources, nested.value, segments, label);
+                overlayMapping(values, sources, locations, nested.value, segments, label, stateFile);
             } else {
-                overlayValue(values, sources, segments, value, label);
+                overlayValue(values, sources, locations, segments, value, label, origin);
             }
         }
     }
@@ -224,7 +239,7 @@ function labelFor(raw: string, stateDir: string): string {
 }
 
 /** Deep-merge a YAML mapping into `values`, recording provenance per path. */
-function overlayMapping(values: Record<string, unknown>, sources: Map<string, string>, mapping: YMapping, prefix: readonly string[], label: string): void {
+function overlayMapping(values: Record<string, unknown>, sources: Map<string, string>, locations: Map<string, ChartValueOrigin>, mapping: YMapping, prefix: readonly string[], label: string, file: string): void {
     for (const pair of mapping.pairs) {
         if (!pair.key) continue;
         const segments = [...prefix, pair.key];
@@ -232,15 +247,16 @@ function overlayMapping(values: Record<string, unknown>, sources: Map<string, st
             // Record the mapping path itself, so intermediate keys carry
             // the source of the file that defined them.
             sources.set(segments.join('\u001f'), label);
-            overlayMapping(values, sources, pair.value, segments, label);
+            locations.set(segments.join('\u001f'), { file, offset: pair.keyStart });
+            overlayMapping(values, sources, locations, pair.value, segments, label, file);
         } else {
-            overlayValue(values, sources, segments, pair.value ? toPlain(pair.value) : undefined, label);
+            overlayValue(values, sources, locations, segments, pair.value ? toPlain(pair.value) : undefined, label, { file, offset: pair.keyStart });
         }
     }
 }
 
 /** One leaf write: replaces whatever was there, including whole subtrees. */
-function overlayValue(values: Record<string, unknown>, sources: Map<string, string>, segments: readonly string[], value: unknown, label: string): void {
+function overlayValue(values: Record<string, unknown>, sources: Map<string, string>, locations: Map<string, ChartValueOrigin>, segments: readonly string[], value: unknown, label: string, origin: ChartValueOrigin | null): void {
     let current: Record<string, unknown> = values;
     for (let i = 0; i < segments.length - 1; i++) {
         const next = current[segments[i]];
@@ -251,8 +267,12 @@ function overlayValue(values: Record<string, unknown>, sources: Map<string, stri
     current[last] = value;
     const key = segments.join('\u001f');
     sources.set(key, label);
+    if (origin) locations.set(key, origin);
     for (const existing of sources.keys()) {
-        if (existing !== key && existing.startsWith(key + '\u001f')) sources.delete(existing);
+        if (existing !== key && existing.startsWith(key + '\u001f')) {
+            sources.delete(existing);
+            locations.delete(existing);
+        }
     }
 }
 
@@ -261,17 +281,20 @@ function overlayValue(values: Record<string, unknown>, sources: Map<string, stri
  * values, re-labelling provenance from the parent's source map: a path
  * `[name, a, b]` in parent space lands at `[a, b]` in subchart space.
  */
-function applyParentOverlay(values: Record<string, unknown>, sources: Map<string, string>, overlay: Record<string, unknown>, parentSegments: readonly string[], parentSources: ReadonlyMap<string, string>): void {
+function applyParentOverlay(values: Record<string, unknown>, sources: Map<string, string>, locations: Map<string, ChartValueOrigin>, overlay: Record<string, unknown>, parentSegments: readonly string[], parentSources: ReadonlyMap<string, string>, parentLocations: ReadonlyMap<string, ChartValueOrigin>): void {
     const subSegments = parentSegments.slice(1); // drop the dependency key itself
     for (const [key, value] of Object.entries(overlay)) {
         if (value === undefined) continue;
         const nextParent = [...parentSegments, key];
-        const label = parentSources.get(nextParent.join('\u001f')) ?? 'parent chart values';
+        const parentKey = nextParent.join('\u001f');
+        const label = parentSources.get(parentKey) ?? 'parent chart values';
+        const origin = parentLocations.get(parentKey) ?? null;
         if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
             sources.set([...subSegments, key].join('\u001f'), label);
-            applyParentOverlay(values, sources, value as Record<string, unknown>, nextParent, parentSources);
+            if (origin) locations.set([...subSegments, key].join('\u001f'), origin);
+            applyParentOverlay(values, sources, locations, value as Record<string, unknown>, nextParent, parentSources, parentLocations);
         } else {
-            overlayValue(values, sources, [...subSegments, key], value, label);
+            overlayValue(values, sources, locations, [...subSegments, key], value, label, origin);
         }
     }
 }
@@ -290,6 +313,16 @@ function valueAt(values: Record<string, unknown>, sources: Map<string, string>, 
     }
     if (current === undefined) return null;
     return { ...kindOf(current), source };
+}
+
+/** File and offset the effective value at a dotted path was last written at. */
+function originAt(locations: Map<string, ChartValueOrigin>, segments: readonly string[]): ChartValueOrigin | null {
+    let origin: ChartValueOrigin | null = null;
+    for (let i = 1; i <= segments.length; i++) {
+        const hit = locations.get(segments.slice(0, i).join('\u001f'));
+        if (hit) origin = hit;
+    }
+    return origin;
 }
 
 function keysUnder(values: Record<string, unknown>, sources: Map<string, string>, schema: unknown, segments: readonly string[]): ChartKey[] {

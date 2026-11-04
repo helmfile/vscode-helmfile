@@ -1413,6 +1413,14 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
         check('subchart: parent values file overrides dep default', depPort != null && depPort.preview === '5678' && depPort.source.includes('app-values.yaml'), JSON.stringify(depPort));
         const depExtra = dep?.valueAt(['extra']) ?? null;
         check('subchart: parent chart default overrides dep default', depExtra != null && depExtra.preview === 'from-parent-default' && depExtra.source === 'app values.yaml', JSON.stringify(depExtra));
+        const stateText = fs.readFileSync(path.join(overlay, 'helmfile.yaml'), 'utf8');
+        const replicasOrigin = model.originAt(['replicas']);
+        check('origin: set entry points at the state file', replicasOrigin != null && replicasOrigin.file === path.join(overlay, 'helmfile.yaml') && stateText.slice(replicasOrigin.offset).startsWith('name: replicas'), JSON.stringify(replicasOrigin));
+        const tagOrigin = model.originAt(['image', 'tag']);
+        const tagText = tagOrigin ? fs.readFileSync(tagOrigin.file, 'utf8') : '';
+        check('origin: values-file key points at its file', tagOrigin != null && tagOrigin.file === path.join(overlay, 'app-values.yaml') && tagText.slice(tagOrigin.offset).startsWith('tag:'), JSON.stringify(tagOrigin));
+        const depOrigin = dep?.originAt(['extra']) ?? null;
+        check('origin: threaded through parent overlay', depOrigin != null && depOrigin.file === path.join(overlay, 'charts', 'app', 'values.yaml'), JSON.stringify(depOrigin));
     }
     const freshContext = chartTemplateContextFor(template, nextStamp());
     check('fresh context for main chart', freshContext != null);
@@ -1474,6 +1482,32 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     const withText = '{{ with .Values.image }}{{ .';
     const withList = chartAt(withText, withText.length);
     check('with scope completes map keys', withList.items.some(i => i.label === 'repository'), JSON.stringify(withList.items.map(i => i.label)));
+
+    // ---- Iteration variables: bindings, completion, hover. ----
+    const { variableBindings } = require('../src/chartIteration') as typeof import('../src/chartIteration');
+    const bindText = '{{ range $i, $v := .Values.list }}{{ $v.port }}{{ end }}';
+    const bindings = variableBindings(bindText, bindText.indexOf('$v.port') + 2);
+    check('bindings: range destructuring visible inside block', bindings.length === 2 && bindings[0].name === '$i' && bindings[0].role === 'index' && bindings[1].name === '$v' && bindings[1].role === 'element' && bindings[1].path === '.Values.list', JSON.stringify(bindings));
+    check('bindings: outside block none', variableBindings(bindText, 4).length === 0, JSON.stringify(variableBindings(bindText, 4)));
+    const withBindText = '{{ with $img := .Values.image }}{{ $img }}{{ end }}';
+    const withBindings = variableBindings(withBindText, withBindText.indexOf('$img }}') + 2);
+    check('bindings: with declares value variable', withBindings.length === 1 && withBindings[0].role === 'value' && withBindings[0].path === '.Values.image', JSON.stringify(withBindings));
+    const varFieldText = '{{ range $v := .Values.list }}{{ $v.';
+    const varFieldList = chartAt(varFieldText, varFieldText.length);
+    const varFieldLabels = varFieldList.items.map(i => String(i.label));
+    check('$var. completes element keys', varFieldLabels.includes('name') && varFieldLabels.includes('port'), JSON.stringify(varFieldLabels));
+    check('$var. skips state roots', !varFieldLabels.includes('.Values'), JSON.stringify(varFieldLabels));
+    const nestedVarText = '{{ range $e := .Values.list }}{{ with $v := .Values.image }}{{ $v.';
+    const nestedVarList = chartAt(nestedVarText, nestedVarText.length);
+    check('innermost binding wins for $var', nestedVarList.items.some(i => i.label === 'repository') && !nestedVarList.items.some(i => i.label === 'name'), JSON.stringify(nestedVarList.items.map(i => i.label)));
+    const varNameText = '{{ range $i, $v := .Values.list }}{{ $';
+    const varNameList = chartAt(varNameText, varNameText.length);
+    const varNameLabels = varNameList.items.map(i => String(i.label));
+    check('$ completes declared variable names', varNameLabels.includes('$i') && varNameLabels.includes('$v'), JSON.stringify(varNameLabels));
+    const varTypedText = '{{ range $i, $v := .Values.list }}{{ $v';
+    const varTypedList = chartAt(varTypedText, varTypedText.length);
+    const varTypedLabels = varTypedList.items.map(i => String(i.label));
+    check('partial $v offers only the variable', varTypedLabels.includes('$v') && !varTypedLabels.includes('$i') && !varTypedLabels.includes('$.Values'), JSON.stringify(varTypedLabels));
     const snippetList = chartAt('{{ ran', 6);
     check('snippet skeleton offered', snippetList.items.some(i => i.kind === vscode.CompletionItemKind.Snippet && i.label === 'range'), JSON.stringify(snippetList.items.filter(i => i.kind === vscode.CompletionItemKind.Snippet).map(i => i.label)));
 
@@ -1487,6 +1521,12 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     check('range element field hover', rangeHover != null && hoverText(rangeHover).includes('`range` element') && hoverText(rangeHover).includes('name'), hoverText(rangeHover));
     const schemaHover = hoverAt('{{ .Values.image }}', 11);
     check('schema description in values hover', schemaHover != null && hoverText(schemaHover).includes('Container image of the app.'), hoverText(schemaHover));
+    const varHover = hoverAt('{{ range $v := .Values.list }}{{ $v }}{{ end }}', 33);
+    check('$var hover shows the collection', varHover != null && hoverText(varHover).includes('element of') && hoverText(varHover).includes('list') && hoverText(varHover).includes('[{'), hoverText(varHover));
+    const varFieldHover = hoverAt('{{ range $v := .Values.list }}{{ $v.name }}{{ end }}', 36);
+    check('$var.field hover lists element keys', varFieldHover != null && hoverText(varFieldHover).includes('field of the range element') && hoverText(varFieldHover).includes('port'), hoverText(varFieldHover));
+    const withVarHover = hoverAt('{{ with $img := .Values.image }}{{ $img.tag }}{{ end }}', 40);
+    check('with $var.field hover resolves value', withVarHover != null && hoverText(withVarHover).includes('value of') && hoverText(withVarHover).includes('latest'), hoverText(withVarHover));
 
     // ---- Chart.yaml completion: dependencies. ----
     const { ChartYamlCompletionProvider } = require('../src/chartYaml') as typeof import('../src/chartYaml');
@@ -1533,6 +1573,8 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     const { HelmfileDefinitionProvider, chartTemplateReferences } = require('../src/references') as typeof import('../src/references');
     const definition = new HelmfileDefinitionProvider(env).provideDefinition(mkChartDoc('{{ include "mychart.name" . }}') as never, new vscode.Position(0, 12)) as { uri: { fsPath: string } } | null;
     check('include jumps to define', definition != null && definition.uri.fsPath.endsWith('_helpers.tpl'), definition ? definition.uri.fsPath : 'null');
+    const originDef = new HelmfileDefinitionProvider(env).provideDefinition(mkChartDoc('{{ .Values.image.tag }}') as never, new vscode.Position(0, 11)) as { uri: { fsPath: string } } | null;
+    check('values path jumps to its origin file', originDef != null && originDef.uri.fsPath.endsWith('values.yaml'), originDef ? originDef.uri.fsPath : 'null');
     if (freshContext) {
         const helperText = fs.readFileSync(helpers, 'utf8');
         const nameOffset = helperText.indexOf('"mychart.name"') + 1;

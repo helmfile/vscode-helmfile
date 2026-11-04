@@ -8,7 +8,7 @@ import * as path from 'node:path';
 import { chartBuiltinOf, chartFileOf, chartTemplateContextFor, chartTemplateDetected, CHART_BUILTIN_TOKEN, CHART_ROOT_PATHS, type ChartTemplateContext } from './chartContext';
 import { chartModelFor, iterationBaseModel, subchartModel } from './chartModel';
 import { chartDefinesFor, templateCallAt } from './chartDefines';
-import { enclosingIteration } from './chartIteration';
+import { enclosingIteration, variableBindings } from './chartIteration';
 import { findFunction, functionMarkdown } from './functionCatalog';
 import { ancestors, pairKeyAt, parseTree } from './yamlTree';
 import { schemaContext, schemaFields } from './schema';
@@ -33,6 +33,7 @@ function builtinPathAt(text: string, offset: number): { text: string; start: num
 }
 
 const RELATIVE_PATH = /(?<![.A-Za-z0-9_$])(\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)/g;
+const VARIABLE_PATH = /\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*/g;
 
 /** A relative `.field.path` under the cursor that is not a built-in root. */
 function relativePathAt(text: string, offset: number): { path: string; start: number; end: number } | null {
@@ -43,6 +44,21 @@ function relativePathAt(text: string, offset: number): { path: string; start: nu
         const first = match[0].slice(1).split('.')[0];
         if ((CHART_ROOT_PATHS as readonly string[]).includes(first)) continue;
         return { path: match[0], start, end };
+    }
+    return null;
+}
+
+/** A `$var[.field.path]` token under the cursor. */
+function variablePathAt(text: string, offset: number): { name: string; fields: string; start: number; end: number } | null {
+    for (const match of matchAll(VARIABLE_PATH, text)) {
+        const start = match.index ?? 0;
+        const end = start + match[0].length;
+        if (offset < start || offset > end) continue;
+        const token = match[0];
+        const dot = token.indexOf('.');
+        return dot === -1
+            ? { name: token, fields: '', start, end }
+            : { name: token.slice(0, dot), fields: token.slice(dot), start, end };
     }
     return null;
 }
@@ -166,6 +182,45 @@ export class HelmfileHoverProvider implements vscode.HoverProvider {
             if (description) content.appendMarkdown(`\n\n${description}`);
             content.appendMarkdown(`\n\nFrom \`${info.source}\``);
             return new vscode.Hover(content, valuePath.range);
+        }
+        // `$var` / `$var.field`: what the innermost binding refers to.
+        const variable = variablePathAt(text, offset);
+        if (variable) {
+            const binding = [...variableBindings(text, offset)].reverse().find(candidate => candidate.name === variable.name);
+            const base = binding ? iterationBaseModel(binding.path, context, contentStamp(), this.env.get()) : null;
+            if (binding && base) {
+                const roleText = binding.role === 'index' ? 'index of' : binding.role === 'element' ? 'element of' : 'value of';
+                const header = `**${binding.name}** — ${roleText} \`${binding.keyword} ${binding.path}\``;
+                const baseInfo = base.model.valueAt(base.segments);
+                const segments = variable.fields.slice(1).split('.').filter(segment => segment.length > 0);
+                if (segments.length === 0) {
+                    const content = new vscode.MarkdownString(header);
+                    if (baseInfo) {
+                        content.appendMarkdown(`\n\nCollection (${baseInfo.kind}):`);
+                        content.appendCodeblock(baseInfo.preview, 'yaml');
+                        content.appendMarkdown(`\n\nFrom \`${baseInfo.source}\``);
+                    }
+                    return new vscode.Hover(content, offsetRange(text, variable.start, variable.end));
+                }
+                const info = base.model.valueAt([...base.segments, ...segments]);
+                if (info) {
+                    const content = new vscode.MarkdownString(header);
+                    content.appendMarkdown(`\n\n**${binding.name}${variable.fields}** — ${info.kind === 'scalar' ? 'value' : info.kind}:`);
+                    content.appendCodeblock(info.preview, 'yaml');
+                    content.appendMarkdown(`\n\nFrom \`${info.source}\``);
+                    return new vscode.Hover(content, offsetRange(text, variable.start, variable.end));
+                }
+                // `range` over a list: element fields vary per item — list the union.
+                if (binding.role === 'element' && baseInfo?.kind === 'list' && segments.length === 1) {
+                    const elementKeys = base.model.elementKeys(base.segments).map(key => key.key);
+                    if (elementKeys.includes(segments[0])) {
+                        const content = new vscode.MarkdownString(header);
+                        content.appendMarkdown(`\n\n**${binding.name}.${segments[0]}** — field of the range element.`);
+                        content.appendMarkdown(`\n\nElement keys: ${elementKeys.map(key => '\`' + key + '\`').join(', ')}`);
+                        return new vscode.Hover(content, offsetRange(text, variable.start, variable.end));
+                    }
+                }
+            }
         }
         // Relative `.field` path inside a `range`/`with` block: show what the
         // element field resolves to.
