@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
 import { chartFileOf, chartTemplateContextFor, chartTemplateDetected, type ChartTemplateContext } from './chartContext';
 import { chartDefinesFor } from './chartDefines';
+import { variableScopeIssues } from './chartIteration';
 import { chartModelFor } from './chartModel';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
 import { contentStamp, isHelmfileName, type SourceFile } from './values';
@@ -79,6 +80,8 @@ export class HelmfileDiagnostics implements vscode.Disposable {
             if (chartContext) {
                 missingDefineDiagnostics(document, chartContext, diagnostics);
                 schemaUnknownKeyDiagnostics(document, chartContext, diagnostics);
+                variableScopeDiagnostics(document, diagnostics);
+                duplicateDefineDiagnostics(document, chartContext, diagnostics);
             }
             this.collection.set(document.uri, diagnostics);
             return;
@@ -582,5 +585,50 @@ function schemaUnknownKeyDiagnostics(document: vscode.TextDocument, context: Cha
             schemaUnknownKeys.set(diagnostic, { segments, schemaFile, type: kind === 'map' ? 'object' : kind === 'list' ? 'array' : 'string' });
             diagnostics.push(diagnostic);
         }
+    }
+}
+
+/**
+ * `$variable` scoping across the document: uses of never-declared names and
+ * assignments to undeclared names. Go template scoping — `range`/`with`/
+ * `define`/`block` open scopes, `if` does not, `define`/`block` bodies start
+ * fresh — so `{{ range $i, $v := . }}{{ $v }}{{ end }}` is clean while
+ * `{{ $missing }}` flags.
+ */
+function variableScopeDiagnostics(document: vscode.TextDocument, diagnostics: vscode.Diagnostic[]): void {
+    const text = document.getText();
+    for (const issue of variableScopeIssues(text)) {
+        const diagnostic = new vscode.Diagnostic(offsetRange(text, issue.start, issue.end), issue.message, vscode.DiagnosticSeverity.Warning);
+        diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+        diagnostics.push(diagnostic);
+    }
+}
+
+/**
+ * `{{ define "name" }}` declared more than once in the same chart. Helm
+ * silently uses the last one — almost always a copy-paste accident worth
+ * a warning.
+ */
+function duplicateDefineDiagnostics(document: vscode.TextDocument, context: ChartTemplateContext, diagnostics: vscode.Diagnostic[]): void {
+    const text = document.getText();
+    const defines = [...chartDefinesFor(context, contentStamp(), { file: document.uri.fsPath, text })]
+        .sort((a, b) => (a.file === b.file ? a.start - b.start : a.file.localeCompare(b.file)));
+    const seen = new Map<string, { file: string; start: number }>();
+    for (const define of defines) {
+        const first = seen.get(define.name);
+        if (!first) {
+            seen.set(define.name, define);
+            continue;
+        }
+        if (define.file !== document.uri.fsPath) continue; // reported in its own buffer
+        const where = first.file === document.uri.fsPath
+            ? 'earlier in this file'
+            : `templates/${path.relative(path.join(context.root, 'templates'), first.file)}`;
+        const header = text.slice(define.start);
+        const literal = header.indexOf(`"${define.name}"`);
+        const start = literal > 0 ? define.start + literal + 1 : define.start;
+        const diagnostic = new vscode.Diagnostic(offsetRange(text, start, start + define.name.length), `Duplicate define "${define.name}": also defined ${where}`, vscode.DiagnosticSeverity.Warning);
+        diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+        diagnostics.push(diagnostic);
     }
 }

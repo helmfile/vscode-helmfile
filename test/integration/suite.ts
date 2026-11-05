@@ -228,6 +228,14 @@ async function main(): Promise<void> {
         const helperTplDiags = vscode.languages.getDiagnostics(helpersUri).filter(d => d.source === 'helmfile');
         check('helpers tpl clean diagnostics', helperTplDiags.length === 0, JSON.stringify(helperTplDiags.map(d => d.message.slice(0, 60))));
 
+        const brokenVarsUri = vscode.Uri.file(path.join(chartWs, 'charts', 'demo', 'templates', 'broken-vars.tpl'));
+        fs2.writeFileSync(brokenVarsUri.fsPath, '{{- $ids := .Values.replicaCount -}}\n{{ if $missing }}{{ $ids }}{{ end }}\n');
+        const brokenVarsDoc = await vscode.workspace.openTextDocument(brokenVarsUri);
+        await sleep(400);
+        const varDiags = vscode.languages.getDiagnostics(brokenVarsUri).filter(d => d.source === 'helmfile');
+        check('undefined variable flagged in tpl', varDiags.length === 1 && varDiags[0].message.includes('Undefined variable $missing'), JSON.stringify(varDiags.map(d => d.message.slice(0, 60))));
+        void brokenVarsDoc;
+
         const sigHelp = (await vscode.commands.executeCommand('vscode.executeSignatureHelpProvider', chartUri, cdoc.positionAt(cdoc.getText().indexOf('include "demo.name" ') + 'include "demo.name" '.length))) as vscode.SignatureHelp | undefined;
         check('signature help for include', (sigHelp?.signatures?.length ?? 0) > 0 && String(sigHelp!.signatures[0].label).startsWith('include('), `sig=${sigHelp?.signatures?.[0]?.label ?? 'none'}`);
         void helpersDoc;

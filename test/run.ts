@@ -1396,6 +1396,39 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     diagnostics.analyze(mockDoc(flowFile, blockOnly));
     check('block actions mask to blank lines', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
 
+    // $variable scoping: undefined uses and assignments to undeclared names.
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(helperFile, '{{ if $missing }}x{{ end }}\n'));
+    check('undefined variable flagged', captured.length === 1 && (captured[0] as { message: string }).message.includes('Undefined variable $missing'), JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(helperFile, '{{ range $i, $v := .Values.list }}{{ $v }}{{ end }}\n'));
+    check('range variables resolve', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(helperFile, '{{ $y = 1 }}\n'));
+    check('assignment to undeclared variable flagged', captured.length === 1 && (captured[0] as { message: string }).message.includes('Assignment to undeclared'), JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(helperFile, '{{- define "demo.scope" -}}\n{{- $ids := . | default list -}}\n{{- if not (kindIs "slice" $ids) -}}{{- $ids = list $ids -}}{{- end -}}\n[{{ range $i, $v := $ids }}{{ if $i }},{{ end }}{{ printf "%q" (toString $v) }}{{ end }}]\n{{- end -}}\n'));
+    check('idList helper passes scope check', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(helperFile, '{{ $a := 1 }}{{ define "demo.fresh" }}{{ $a }}{{ end }}\n'));
+    check('define bodies start a fresh scope', captured.length === 1 && (captured[0] as { message: string }).message.includes('Undefined variable $a'), JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(helperFile, '{{ if .a }}{{ $t := 1 }}{{ end }}{{ $t }}\n'));
+    check('if blocks do not scope variables', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
+    // Duplicate defines within the same chart (two probe files).
+    const dupA = path.join(root, 'templates', '_probe_dup.tpl');
+    const dupB = path.join(root, 'templates', '_probe_dup2.tpl');
+    fs.writeFileSync(dupA, '{{- define "probe.dup" -}}first{{- end -}}\n');
+    fs.writeFileSync(dupB, '{{- define "probe.dup" -}}second{{- end -}}\n');
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(dupB, fs.readFileSync(dupB, 'utf8')));
+    const dupMessages = captured.map(d => (d as { message: string }).message).join('|');
+    check('duplicate define across files flagged', captured.length === 1 && dupMessages.includes('Duplicate define "probe.dup"'), dupMessages);
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(dupA, fs.readFileSync(dupA, 'utf8')));
+    check('first define occurrence stays clean', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
     // ---- Extended chart fixtures: subchart, schema, defines, list values. ----
     fs.writeFileSync(path.join(root, 'values.yaml'), 'image:\n  repository: nginx\n  tag: latest\nreplicas: 3\nsubchart:\n  port: 9091\nlist:\n  - name: a\n    port: 1\n  - name: b\n    port: 2\n');
     fs.writeFileSync(path.join(root, 'values.schema.json'), JSON.stringify({
