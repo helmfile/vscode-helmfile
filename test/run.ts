@@ -1618,6 +1618,11 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     (vscode as unknown as { configOverrides: Record<string, unknown> }).configOverrides.chartValueHints = false;
     check('inlay hints setting disables provider', hintsProvider.provideInlayHints(hintDoc as never, { start: new vscode.Position(0, 0), end: new vscode.Position(2, 0) } as never).length === 0);
     (vscode as unknown as { configOverrides: Record<string, unknown> }).configOverrides.chartValueHints = true;
+    const emptyDoc = mkChartDoc('deviceIDs: {{ include "demo.idList" .Values.deviceID }}\n');
+    fs.writeFileSync(path.join(root, 'values.yaml'), fs.readFileSync(path.join(root, 'values.yaml'), 'utf8') + 'deviceID: ""\n');
+    bumpContentVersion();
+    const emptyHints = hintsProvider.provideInlayHints(emptyDoc as never, { start: new vscode.Position(0, 0), end: new vscode.Position(1, 0) } as never) as { label: string }[];
+    check('empty-string value renders as quoted, not bare =', emptyHints.length === 1 && emptyHints[0].label === '= ""', JSON.stringify(emptyHints.map(h => h.label)));
 
     const outlineText = [
         '{{- if .Values.enabled }}',
