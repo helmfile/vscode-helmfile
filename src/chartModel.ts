@@ -248,7 +248,13 @@ function overlayMapping(values: Record<string, unknown>, sources: Map<string, st
             // the source of the file that defined them.
             sources.set(segments.join('\u001f'), label);
             locations.set(segments.join('\u001f'), { file, offset: pair.keyStart });
-            overlayMapping(values, sources, locations, pair.value, segments, label, file);
+            if (pair.value.pairs.length === 0) {
+                // `key: {}` — an empty flow mapping still reserves the key,
+                // same as `key: []` reserves an empty sequence.
+                overlayValue(values, sources, locations, segments, {}, label, { file, offset: pair.keyStart });
+            } else {
+                overlayMapping(values, sources, locations, pair.value, segments, label, file);
+            }
         } else {
             overlayValue(values, sources, locations, segments, pair.value ? toPlain(pair.value) : undefined, label, { file, offset: pair.keyStart });
         }

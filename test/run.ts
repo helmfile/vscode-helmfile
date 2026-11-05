@@ -1731,6 +1731,11 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     bumpContentVersion();
     const emptyHints = hintsProvider.provideInlayHints(emptyDoc as never, { start: new vscode.Position(0, 0), end: new vscode.Position(1, 0) } as never) as { label: string }[];
     check('empty-string value renders as quoted, not bare =', emptyHints.length === 1 && emptyHints[0].label === '= ""', JSON.stringify(emptyHints.map(h => h.label)));
+    const shapesDoc = mkChartDoc('a: {{ .Values.emptyList }}\nb: {{ .Values.emptyMap }}\nc: {{ .Values.nulL }}\n');
+    fs.writeFileSync(path.join(root, 'values.yaml'), fs.readFileSync(path.join(root, 'values.yaml'), 'utf8') + 'emptyList: []\nemptyMap: {}\nnulL:\n');
+    bumpContentVersion();
+    const shapeHints = hintsProvider.provideInlayHints(shapesDoc as never, { start: new vscode.Position(0, 0), end: new vscode.Position(3, 0) } as never) as { label: string }[];
+    check('empty list and map previews stay literal', shapeHints.length === 3 && shapeHints[0].label === '= []' && shapeHints[1].label === '= {}' && shapeHints[2].label === '= ""', JSON.stringify(shapeHints.map(h => h.label)));
 
     const outlineText = [
         '{{- if .Values.enabled }}',

@@ -45,7 +45,9 @@ export class HelmfileInlayHintsProvider implements vscode.InlayHintsProvider {
         // path (iteration bases only matter for relative `.field` references).
         const info = base.model.valueAt(base.segments);
         if (!info) return null;
-        const preview = info.kind === 'scalar' ? info.preview : info.kind === 'list' ? '[…]' : '{…}';
+        // kindOf already renders an accurate preview for every kind
+        // (`""`/`(empty)` scalars, `[]`/`[a, b]` lists, `{}`/`{a, b}` maps).
+        const preview = info.preview.length > 40 ? `${info.preview.slice(0, 40)}…` : info.preview;
         const label = `= ${preview.length > 40 ? `${preview.slice(0, 40)}…` : preview}`;
         const hint = new vscode.InlayHint(positionAt(text, pathEnd), label);
         const tooltip = new vscode.MarkdownString();
