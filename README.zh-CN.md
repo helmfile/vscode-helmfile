@@ -184,6 +184,12 @@ Host),自带 `examples/` 下的示例状态文件。
 - 诊断切换为 Helm 模板规则 —— 未闭合动作、非法 `{{ define }}`/`{{ range }}`
   块、YAML 语法（仅 `.yaml`/`.yml` 模板；`.tpl` 和 `NOTES.txt` 是 Go 模板
   片段，不做 YAML 检查）—— 而 Helmfile 状态检查（仓库、未知字段、缺失文件）保持静默。
+- `$variable` 遵循 Go 模板词法作用域：`range`/`with`/`define`/`block` 开启
+  作用域（`if` 不会，`define`/`block` 从全新作用域开始），`{{ $x = v }}` 要求
+  先用 `:=` 声明 —— `{{ $repicas }}` 这类笔误会得到 **Undefined variable**
+  警告，`.tpl` 与 `.yaml` 模板均生效。
+- 同一 chart 内重复声明的 `{{ define }}` 名称会得到 **Duplicate define**
+  警告（Helm 会静默使用最后一个）。
 - 补全提供 Helm 内置变量(`.Chart.Name`、`.Release.Namespace`、
   `.Capabilities.KubeVersion`、`.Files.Get` 等)、`charts/` 下的子 chart 名,以及
   基于 chart **生效值**的 `.Values` 键:chart 自身 `values.yaml` 叠加所有

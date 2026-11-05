@@ -221,6 +221,13 @@ chart-aware assistance inside `<chart>/templates/` files
   `.tpl` and `NOTES.txt` are Go template fragments and skip the YAML check) —
   while Helmfile state checks (repositories, unknown fields, missing files)
   stay silent.
+- `$variable` usage follows Go template lexical scoping: `range`/`with`/
+  `define`/`block` open scopes (`if` does not, `define`/`block` start fresh),
+  and `{{ $x = v }}` requires an earlier `:=` declaration — typos like
+  `{{ $repicas }}` get an **Undefined variable** warning, in `.tpl` and
+  `.yaml` templates alike.
+- A `{{ define }}` name declared more than once in the same chart gets a
+  **Duplicate define** warning (Helm silently uses the last one).
 - Completion offers Helm's built-in variables (`.Chart.Name`,
   `.Release.Namespace`, `.Capabilities.KubeVersion`, `.Files.Get`, …),
   subchart names from `charts/`, and `.Values` keys resolved against the

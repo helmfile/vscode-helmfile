@@ -35,6 +35,114 @@ export interface VariableBinding extends IterationVariable {
     readonly end: number;
 }
 
+/** A scope problem found by {@link variableScopeIssues}. */
+export interface VariableScopeIssue {
+    readonly start: number;
+    readonly end: number;
+    readonly message: string;
+}
+
+interface ScopeFrame {
+    /** `if` frames only pair their `end`; they never scope variables. */
+    readonly real: boolean;
+    /** `define`/`block` bodies start fresh: outer bindings are invisible. */
+    readonly cuts: boolean;
+    readonly bindings: Map<string, number>;
+}
+
+const DECLARED = /\$([A-Za-z_][A-Za-z0-9_]*)\s*:=/;
+
+/**
+ * Validates `$variable` usage across the whole document following Go
+ * template lexical scoping: `range`/`with`/`define`/`block` open scopes
+ * (`if` does not), `define`/`block` start fresh, and `{{ $x = v }}`
+ * requires an earlier declaration. `{{ else if }}` chains neither open
+ * nor close — the single `{{ end }}` pairs the outer block.
+ */
+export function variableScopeIssues(text: string): readonly VariableScopeIssue[] {
+    const issues: VariableScopeIssue[] = [];
+    const stack: ScopeFrame[] = [{ real: true, cuts: false, bindings: new Map() }];
+    const nearestReal = () => {
+        for (let i = stack.length - 1; i >= 0; i--) if (stack[i].real) return stack[i];
+        return stack[0];
+    };
+    const visibleFrom = (name: string, offset: number): number | null => {
+        for (let i = stack.length - 1; i >= 0; i--) {
+            const from = stack[i].bindings.get(name);
+            if (from !== undefined && from <= offset) return from;
+            if (stack[i].cuts) return null;
+        }
+        return null;
+    };
+    for (const action of TemplateScanner.scan(text)) {
+        const body = text.slice(action.bodyStart, action.bodyEnd);
+        if (body.trim().startsWith('/*')) continue;
+        const head = headWord(action, text);
+        if (head === 'end') {
+            if (stack.length > 1) stack.pop();
+            continue;
+        }
+        const opens = head === 'if' || head === 'range' || head === 'with' || head === 'define' || head === 'block';
+        // References first: header/declaration names on the left of `:=`
+        // are declarations, not uses, and RHS uses resolve against outer
+        // bindings only. `afterKeyword` starts after any stripped keyword,
+        // so its indices are rebased with `keywordOffset`.
+        const stripMatch = /^\s*-?\s*(?:if|range|with|define|block)\b\s*/.exec(body);
+        const keywordOffset = stripMatch ? stripMatch[0].length : 0;
+        const afterKeyword = body.slice(keywordOffset);
+        const declaredInAction: string[] = [];
+        let declarationEnd = 0;
+        const destructure = /^\s*\$([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*))?\s*:=/.exec(afterKeyword);
+        if (head === 'range' && destructure) {
+            declaredInAction.push(destructure[1], ...(destructure[2] ? [destructure[2]] : []));
+            declarationEnd = afterKeyword.indexOf(':=');
+        } else if (head === 'with' && destructure) {
+            declaredInAction.push(destructure[1]);
+            declarationEnd = afterKeyword.indexOf(':=');
+        } else if (!opens) {
+            const plain = DECLARED.exec(afterKeyword);
+            if (plain) {
+                declaredInAction.push(plain[1]);
+                declarationEnd = afterKeyword.indexOf(':=');
+            }
+        }
+        const assignment = !declaredInAction.length ? /^\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)/.exec(afterKeyword) : null;
+        let useStart = 0;
+        if (assignment) {
+            useStart = (assignment.index ?? 0) + assignment[0].length;
+            if (visibleFrom(assignment[1], action.start) === null) {
+                const nameStart = keywordOffset + (assignment.index ?? 0) + assignment[0].indexOf('$' + assignment[1]);
+                const start = action.bodyStart + nameStart;
+                issues.push({
+                    start,
+                    end: start + assignment[1].length + 1,
+                    message: `Assignment to undeclared variable $${assignment[1]}: declare it with $${assignment[1]} := first`,
+                });
+            }
+        }
+        // Every `$name` outside the declaration/assignment LHS is a use;
+        // the `$` root (`$.Values.x`) never matches because a name must
+        // follow the dollar.
+        for (const match of afterKeyword.slice(useStart).matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+            if (useStart + match.index! < declarationEnd) continue;
+            const name = match[1];
+            if (visibleFrom(name, action.start) === null) {
+                const start = action.bodyStart + keywordOffset + useStart + match.index!;
+                issues.push({
+                    start,
+                    end: start + name.length + 1,
+                    message: `Undefined variable $${name}`,
+                });
+            }
+        }
+        // Push the frame first so `range`/`with` header variables are
+        // declared into their own scope and die at the matching `end`.
+        if (opens) stack.push({ real: head !== 'if', cuts: head === 'define' || head === 'block', bindings: new Map() });
+        for (const name of declaredInAction) nearestReal().bindings.set(name, action.end);
+    }
+    return issues;
+}
+
 /**
  * Innermost `range`/`with` block containing `offset`. `if` narrows scope but
  * never changes what `.` refers to, so `if` blocks are tracked on the stack
