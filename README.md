@@ -217,8 +217,10 @@ chart-aware assistance inside `<chart>/templates/` files
   validators no longer flag Go template actions (`{{ .Values.x }}`) as
   invalid YAML, and template/YAML highlighting works everywhere.
 - Diagnostics switch to Helm template rules — unclosed actions, malformed
-  `{{ define }}`/`{{ range }}` blocks, YAML syntax — while Helmfile state
-  checks (repositories, unknown fields, missing files) stay silent.
+  `{{ define }}`/`{{ range }}` blocks, YAML syntax (`.yaml`/`.yml` templates;
+  `.tpl` and `NOTES.txt` are Go template fragments and skip the YAML check) —
+  while Helmfile state checks (repositories, unknown fields, missing files)
+  stay silent.
 - Completion offers Helm's built-in variables (`.Chart.Name`,
   `.Release.Namespace`, `.Capabilities.KubeVersion`, `.Files.Get`, …),
   subchart names from `charts/`, and `.Values` keys resolved against the

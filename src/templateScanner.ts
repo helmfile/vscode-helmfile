@@ -74,6 +74,44 @@ export class TemplateScanner {
         }
         return result.join('');
     }
+
+    /**
+     * YAML projection for syntax checking. Actions inside a flow
+     * collection (`args: [{{ a }},{{ b }}]`) fill with `x` instead of
+     * blanks — masking them to spaces would leave empty flow entries
+     * (`[ , ]`) that surface as parser errors. Block-level actions stay
+     * blank so `{{- if }}`/`{{- end }}` lines remain empty lines.
+     */
+    static maskForYaml(text: string): string {
+        const actions = TemplateScanner.scan(text);
+        const result = text.split('');
+        let depth = 0;
+        let quote = '';
+        let comment = false;
+        let i = 0;
+        for (const action of actions) {
+            for (; i < action.start; i++) {
+                const c = text[i];
+                // Brackets inside quoted scalars and comments do not open
+                // flow collections; stray quotes reset at end of line.
+                if (comment) {
+                    if (c === '\n') comment = false;
+                } else if (quote) {
+                    if (quote === '"' && c === '\\') i++;
+                    else if (c === quote || c === '\n') quote = '';
+                } else if (c === '"' || c === "'") quote = c;
+                else if (c === '#' && (i === 0 || text[i - 1] === ' ' || text[i - 1] === '\t')) comment = true;
+                else if (c === '[' || c === '{') depth++;
+                else if (c === ']' || c === '}') depth = Math.max(0, depth - 1);
+            }
+            const fill = depth > 0 ? 'x' : ' ';
+            for (let j = action.start; j < action.end; j++) {
+                if (result[j] !== '\n' && result[j] !== '\r') result[j] = fill;
+            }
+            i = Math.max(i, action.end - 1);
+        }
+        return result.join('');
+    }
 }
 
 function isWhitespace(c: number): boolean {
