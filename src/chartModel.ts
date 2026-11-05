@@ -412,6 +412,8 @@ function previewList(value: unknown[], cap = 3): string {
 function previewScalar(value: unknown): string {
     const text = value === null || value === undefined ? '(empty)' : String(value);
     const firstLine = text.split('\n')[0];
+    // An empty string would render as a bare `=` in inlay hints.
+    if (firstLine === '') return '""';
     return firstLine.length > 60 ? firstLine.slice(0, 60) + '…' : firstLine;
 }
 
