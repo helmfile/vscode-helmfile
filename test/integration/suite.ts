@@ -170,9 +170,10 @@ async function main(): Promise<void> {
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar', 'Chart.yaml'), 'apiVersion: v2\nname: sidecar\nversion: 0.1.0\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'charts', 'sidecar', 'values.yaml'), 'port: 9090\n');
     fs2.writeFileSync(path.join(chartWs, 'charts', 'demo', 'templates', '_helpers.tpl'),
-        '{{- define "demo.name" -}}\n{{ .Chart.Name }}\n{{- end -}}\n');
+        '{{- define "demo.name" -}}\n{{ .Chart.Name }}\n{{- end -}}\n' +
+        '{{- define "demo.idList" -}}\n{{- $ids := . | default list -}}\n{{- if not (kindIs "slice" $ids) -}}{{- $ids = list $ids -}}{{- end -}}\n[{{ range $i, $v := $ids }}{{ if $i }},{{ end }}{{ printf "%q" (toString $v) }}{{ end }}]\n{{- end -}}\n');
     const chartTemplate = path.join(chartWs, 'charts', 'demo', 'templates', 'deployment.yaml');
-    fs2.writeFileSync(chartTemplate, 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ include "demo.name" . }}\nspec:\n  replicas: {{ .Values.replicaCount }}\n');
+    fs2.writeFileSync(chartTemplate, 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ include "demo.name" . }}\nspec:\n  replicas: {{ .Values.replicaCount }}\n  args: [{{ range $i, $v := .Values.ports }}{{ if $i }},{{ end }}{{ $v.port }}{{ end }}]\n');
     try {
         const chartUri = vscode.Uri.file(chartTemplate);
         const cdoc = await vscode.workspace.openTextDocument(chartUri);
@@ -223,6 +224,9 @@ async function main(): Promise<void> {
         const helpersDoc = await vscode.workspace.openTextDocument(helpersUri);
         const defineSymbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', helpersUri);
         check('define symbols in outline', (defineSymbols ?? []).some(s => s.name === 'demo.name'), JSON.stringify(defineSymbols?.map(s => s.name)));
+
+        const helperTplDiags = vscode.languages.getDiagnostics(helpersUri).filter(d => d.source === 'helmfile');
+        check('helpers tpl clean diagnostics', helperTplDiags.length === 0, JSON.stringify(helperTplDiags.map(d => d.message.slice(0, 60))));
 
         const sigHelp = (await vscode.commands.executeCommand('vscode.executeSignatureHelpProvider', chartUri, cdoc.positionAt(cdoc.getText().indexOf('include "demo.name" ') + 'include "demo.name" '.length))) as vscode.SignatureHelp | undefined;
         check('signature help for include', (sigHelp?.signatures?.length ?? 0) > 0 && String(sigHelp!.signatures[0].label).startsWith('include('), `sig=${sigHelp?.signatures?.[0]?.label ?? 'none'}`);

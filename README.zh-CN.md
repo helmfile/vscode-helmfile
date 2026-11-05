@@ -182,7 +182,8 @@ Host),自带 `examples/` 下的示例状态文件。
 - chart 模板文件由 Helmfile 语言接管,YAML 校验器不再把 Go 模板动作
   (`{{ .Values.x }}`)当成非法 YAML,高亮全面生效。
 - 诊断切换为 Helm 模板规则 —— 未闭合动作、非法 `{{ define }}`/`{{ range }}`
-  块、YAML 语法 —— 而 Helmfile 状态检查(仓库、未知字段、缺失文件)保持静默。
+  块、YAML 语法（仅 `.yaml`/`.yml` 模板；`.tpl` 和 `NOTES.txt` 是 Go 模板
+  片段，不做 YAML 检查）—— 而 Helmfile 状态检查（仓库、未知字段、缺失文件）保持静默。
 - 补全提供 Helm 内置变量(`.Chart.Name`、`.Release.Namespace`、
   `.Capabilities.KubeVersion`、`.Files.Get` 等)、`charts/` 下的子 chart 名,以及
   基于 chart **生效值**的 `.Values` 键:chart 自身 `values.yaml` 叠加所有

@@ -66,7 +66,10 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     analyze(document: vscode.TextDocument): void {
         const text = document.getText();
         const diagnostics: vscode.Diagnostic[] = [];
-        yamlSyntaxErrors(document, diagnostics);
+        // Only YAML-like files get the YAML syntax check. `.tpl`, NOTES.txt
+        // and bare `.gotmpl` files are Go template fragments, never parsed
+        // as YAML by Helm either.
+        if (/\.ya?ml(\.gotmpl)?$/i.test(document.uri.fsPath)) yamlSyntaxErrors(document, diagnostics);
         unclosedActions(text, diagnostics);
         templateBlocks(text, diagnostics);
         // Chart template files are Helm templates, not Helmfile state:
@@ -230,7 +233,7 @@ export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): 
  * produced by whole-template actions are filled to stay valid.
  */
 function yamlSyntaxErrors(document: vscode.TextDocument, diagnostics: vscode.Diagnostic[]): void {
-    const masked = fillMaskedTemplateKeys(TemplateScanner.mask(document.getText()));
+    const masked = fillMaskedTemplateKeys(TemplateScanner.maskForYaml(document.getText()));
     for (const error of parseTree(masked).errors) {
         const start = Math.min(Math.max(0, error.offset), masked.length);
         const end = Math.min(Math.max(start + 1, error.end), masked.length);

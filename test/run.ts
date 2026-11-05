@@ -1363,6 +1363,39 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     diagnostics.analyze({ uri: vscode.Uri.file(template), getText: () => bad } as never);
     check('chart template keeps template diagnostics', captured.length === 1, JSON.stringify(captured.map(d => (d as { message: string }).message)));
 
+    // Go template fragments (.tpl / NOTES.txt) never get the YAML syntax check,
+    // even when their bodies would mask to invalid YAML (e.g. `[ , ]`).
+    captured.length = 0;
+    const helperBody = [
+        '{{- define "demo.idList" -}}',
+        '{{- $ids := . | default list -}}',
+        '{{- if not (kindIs "slice" $ids) -}}{{- $ids = list $ids -}}{{- end -}}',
+        '[{{ range $i, $v := $ids }}{{ if $i }},{{ end }}{{ printf "%q" (toString $v) }}{{ end }}]',
+        '{{- end -}}',
+        '',
+    ].join('\n');
+    const helperFile = path.join(root, 'templates', '_probe_helpers.tpl');
+    fs.writeFileSync(helperFile, helperBody);
+    const mockDoc = (file: string, text: string) => ({ uri: vscode.Uri.file(file), getText: () => text, positionAt: () => new vscode.Position(0, 0) }) as never;
+    diagnostics.analyze(mockDoc(helperFile, helperBody));
+    check('tpl helper body is not YAML-checked', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    // Flow sequences built by template actions stay valid YAML after masking.
+    captured.length = 0;
+    const flowBody = 'args: [{{ range $i, $v := .Values.list }}{{ if $i }},{{ end }}{{ $v }}{{ end }}]\n';
+    const flowFile = path.join(root, 'templates', '_probe_flow.yaml');
+    fs.writeFileSync(flowFile, flowBody);
+    diagnostics.analyze(mockDoc(flowFile, flowBody));
+    check('flow sequence of template actions stays clean', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    // Real YAML errors are still reported in .yaml templates, and block
+    // actions still mask to blank lines.
+    captured.length = 0;
+    diagnostics.analyze(mockDoc(flowFile, '{{- if .Values.x }}\nkey: value\n{{- end }}\na: [unclosed\n'));
+    check('yaml template still reports real yaml errors', captured.length > 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+    captured.length = 0;
+    const blockOnly = '{{- if .Values.x }}\nkey: value\n{{- end }}\n';
+    diagnostics.analyze(mockDoc(flowFile, blockOnly));
+    check('block actions mask to blank lines', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
     // ---- Extended chart fixtures: subchart, schema, defines, list values. ----
     fs.writeFileSync(path.join(root, 'values.yaml'), 'image:\n  repository: nginx\n  tag: latest\nreplicas: 3\nsubchart:\n  port: 9091\nlist:\n  - name: a\n    port: 1\n  - name: b\n    port: 2\n');
     fs.writeFileSync(path.join(root, 'values.schema.json'), JSON.stringify({
