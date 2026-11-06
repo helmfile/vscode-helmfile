@@ -11,7 +11,7 @@ import { chartFileOf, chartTemplateContextFor, chartTemplateDetected, type Chart
 import { chartDefinesFor } from './chartDefines';
 import { variableScopeIssues } from './chartIteration';
 import { chartModelFor } from './chartModel';
-import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar } from './yamlTree';
+import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar, type YTree } from './yamlTree';
 import { contentStamp, isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
@@ -236,13 +236,51 @@ export function templateBlocks(text: string, diagnostics: vscode.Diagnostic[]): 
  * produced by whole-template actions are filled to stay valid.
  */
 function yamlSyntaxErrors(document: vscode.TextDocument, diagnostics: vscode.Diagnostic[]): void {
-    const masked = fillMaskedTemplateKeys(TemplateScanner.maskForYaml(document.getText()));
-    for (const error of parseTree(masked).errors) {
+    const text = document.getText();
+    const masked = fillMaskedTemplateKeys(TemplateScanner.maskForYaml(text));
+    const tree = parseTree(masked);
+    duplicateKeyDiagnostics(document, text, tree, diagnostics);
+    for (const error of tree.errors) {
+        // Duplicate keys get a dedicated, named diagnostic below.
+        if (error.message.includes('Map keys must be unique')) continue;
         const start = Math.min(Math.max(0, error.offset), masked.length);
         const end = Math.min(Math.max(start + 1, error.end), masked.length);
         diagnostics.push(
             new vscode.Diagnostic(new vscode.Range(document.positionAt(start), document.positionAt(end)), error.message, vscode.DiagnosticSeverity.Error),
         );
+    }
+}
+
+/**
+ * Named duplicate-key diagnostics: `repository:` twice in one mapping is a
+ * real post-render defect (the first write is silently dropped), but the
+ * parser's own "Map keys must be unique at line/column" message points at
+ * the wrong place and never names the key. Keys produced by template
+ * actions (`{{ $key }}:`) are skipped — their rendered value is unknowable.
+ */
+function duplicateKeyDiagnostics(document: vscode.TextDocument, text: string, tree: YTree, diagnostics: vscode.Diagnostic[]): void {
+    for (const doc of tree.docs) {
+        if (!doc.root) continue;
+        walkAll(doc.root, node => {
+            if (node.kind !== 'mapping') return;
+            const seen = new Map<string, number>();
+            for (const pair of node.pairs) {
+                if (!pair.key) continue;
+                const first = seen.get(pair.key);
+                if (first === undefined) {
+                    seen.set(pair.key, pair.keyStart);
+                    continue;
+                }
+                if (!text.slice(pair.keyStart, pair.keyEnd).trim()) continue; // templated key
+                diagnostics.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(document.positionAt(pair.keyStart), document.positionAt(pair.keyEnd)),
+                        `Duplicate map key "${pair.key}" — already set at line ${document.positionAt(first).line + 1}`,
+                        vscode.DiagnosticSeverity.Error,
+                    ),
+                );
+            }
+        });
     }
 }
 

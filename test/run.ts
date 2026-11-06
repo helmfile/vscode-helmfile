@@ -1396,6 +1396,36 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     diagnostics.analyze(mockDoc(flowFile, blockOnly));
     check('block actions mask to blank lines', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
 
+    // Duplicate keys: named diagnostic pointing at the second occurrence.
+    // (mockDoc stubs positionAt at 0,0 — these checks need real offsets.)
+    const offsetDoc = (file: string, body: string) => ({
+        uri: vscode.Uri.file(file),
+        getText: () => body,
+        positionAt: (offset: number) => {
+            const before = body.slice(0, offset);
+            const line = (before.match(/\n/g) ?? []).length;
+            return new vscode.Position(line, offset - (before.lastIndexOf('\n') + 1));
+        },
+    }) as never;
+    captured.length = 0;
+    const dupBody = [
+        'image:',
+        '  repository: "registry.example/devops/node-agent"',
+        '  tag: {{ .Values | get "node_agent.image.tag" "0.0.1368" }}',
+        '  repository: {{ .Values | get "node_agent.image.repository" "registry.example/devops/node-agent" }}',
+    ].join('\n');
+    diagnostics.analyze(offsetDoc(flowFile, dupBody));
+    check(
+        'duplicate map key named with first line',
+        captured.length === 1 && (captured[0] as { message: string }).message === 'Duplicate map key "repository" — already set at line 2',
+        JSON.stringify(captured.map(d => (d as { message: string }).message)),
+    );
+    const dupRange = (captured[0] as { range: { start: { line: number; character: number } } }).range;
+    check('duplicate key range points at second occurrence', dupRange.start.line === 3 && dupRange.start.character === 2, JSON.stringify(dupRange));
+    captured.length = 0;
+    diagnostics.analyze(offsetDoc(flowFile, 'image:\n  repository: a\n  tag: {{ .Values.tag }}\n'));
+    check('distinct keys stay clean', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
     // $variable scoping: undefined uses and assignments to undeclared names.
     captured.length = 0;
     diagnostics.analyze(mockDoc(helperFile, '{{ if $missing }}x{{ end }}\n'));
