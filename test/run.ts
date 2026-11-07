@@ -2098,7 +2098,7 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
 
 // Route B engine extraction: engines are editor-neutral and callable without vscode.
 {
-    for (const engine of ['language.ts', 'valuePath.ts', 'hoverEngine.ts', 'completionEngine.ts', 'functionCatalog.ts']) {
+    for (const engine of ['language.ts', 'valuePath.ts', 'hoverEngine.ts', 'completionEngine.ts', 'functionCatalog.ts', 'inspectionEngine.ts']) {
         const source = fs.readFileSync(path.join(__dirname, '..', 'src', engine), 'utf8');
         check(`engine ${engine} stays editor-neutral`, !/from 'vscode'/.test(source), 'imports vscode');
     }
