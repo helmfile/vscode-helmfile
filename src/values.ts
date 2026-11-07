@@ -6,17 +6,17 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
 import { YMapping, YNode, YPair, YTree, mappingGet, parseTree, rootMappings, scalarPathText } from './yamlTree';
 import { environmentsRegion, inferEnvironments } from './environmentInference';
 import { TemplateScanner, fillMaskedTemplateKeys } from './templateScanner';
+import { fileUri, type UriLike } from './language';
 
 export const SEPARATOR = '\u001f';
 export const STATE_NAMES = ['helmfile.yaml.gotmpl', 'helmfile.yml.gotmpl', 'helmfile.yaml', 'helmfile.yml'];
 const ENV_NAME = /\{\{-?\s*\.Environment\.Name\s*-?}}/g;
 
 export interface SourceFile {
-    readonly uri: vscode.Uri;
+    readonly uri: UriLike;
     readonly text: string;
     readonly tree: YTree;
 }
@@ -27,7 +27,7 @@ export interface ValuesDefinition {
     readonly keyStart: number;
     readonly keyEnd: number;
     readonly origin: string;
-    readonly originUri: vscode.Uri;
+    readonly originUri: UriLike;
     /** null for state defaults, otherwise the owning environment. */
     readonly environment: string | null;
     readonly valueKind: 'scalar' | 'list' | 'map';
@@ -75,7 +75,7 @@ export function bumpContentVersion(): void {
     allCache.clear();
 }
 
-export function setOpenDocument(uri: vscode.Uri, version: number, text: string, changed: boolean): void {
+export function setOpenDocument(uri: UriLike, version: number, text: string, changed: boolean): void {
     const key = uri.toString();
     const previous = openDocuments.get(key);
     // Re-parse only when the text actually changed; undo/redo back to the
@@ -85,11 +85,11 @@ export function setOpenDocument(uri: vscode.Uri, version: number, text: string, 
     if (changed || !previous || previous.text !== text) bumpContentVersion();
 }
 
-export function closeOpenDocument(uri: vscode.Uri): void {
+export function closeOpenDocument(uri: UriLike): void {
     if (openDocuments.delete(uri.toString())) bumpContentVersion();
 }
 
-export function readSource(uri: vscode.Uri): SourceFile | null {
+export function readSource(uri: UriLike): SourceFile | null {
     const open = openDocuments.get(uri.toString());
     if (open) return { uri, text: open.text, tree: open.tree };
     try {
@@ -125,7 +125,7 @@ export function isStateFileName(name: string): boolean {
 
 /* ---------------- state file location ---------------- */
 
-export function stateFor(uri: vscode.Uri): SourceFile | null {
+export function stateFor(uri: UriLike): SourceFile | null {
     const self = readSource(uri);
     if (!self) return null;
     if (isStateFileName(uri.fsPath) || hasStateRoot(self.tree)) return self;
@@ -142,14 +142,14 @@ export function stateFor(uri: vscode.Uri): SourceFile | null {
                 .map(entry => entry.name)
                 .sort()[0];
             if (fragment) {
-                const state = readSource(vscode.Uri.file(path.join(helmfileD, fragment)));
+                const state = readSource(fileUri(path.join(helmfileD, fragment)));
                 if (state) return state;
             }
         }
         for (const name of STATE_NAMES) {
             const candidate = path.join(dir, name);
             if (fs.existsSync(candidate)) {
-                const state = readSource(vscode.Uri.file(candidate));
+                const state = readSource(fileUri(candidate));
                 if (state) return state;
             }
         }
@@ -172,7 +172,7 @@ function hasStateRoot(tree: YTree): boolean {
 
 const modelBuilding = new Set<string>();
 
-export function valuesModel(uri: vscode.Uri, environment: string): ValuesModel | null {
+export function valuesModel(uri: UriLike, environment: string): ValuesModel | null {
     const source = readSource(uri);
     if (!source) return null;
     const cacheKey = `${source.uri.toString()}|${environment}|${contentVersion}`;
@@ -192,7 +192,7 @@ export function valuesModel(uri: vscode.Uri, environment: string): ValuesModel |
 }
 
 /** Reverse lookup following every discovered environment. */
-export function allDefinitions(uri: vscode.Uri, selectedEnvironment: string): ValuesDefinition[] {
+export function allDefinitions(uri: UriLike, selectedEnvironment: string): ValuesDefinition[] {
     const source = readSource(uri);
     if (!source) return [];
     const cacheKey = `${source.uri.toString()}|${contentVersion}`;
@@ -228,7 +228,7 @@ function sameDefinition(a: ValuesDefinition, b: ValuesDefinition): boolean {
     );
 }
 
-export function isStateSource(uri: vscode.Uri): boolean {
+export function isStateSource(uri: UriLike): boolean {
     const state = stateFor(uri);
     if (!state) return false;
     const model = valuesModel(uri, 'default');
@@ -241,13 +241,13 @@ export function valuesKeyPath(segments: string[]): string {
 
 /* ---------------- file resolution ---------------- */
 
-export function resolveValueFiles(source: SourceFile, rawPath: string, environment: string): vscode.Uri[] {
+export function resolveValueFiles(source: SourceFile, rawPath: string, environment: string): UriLike[] {
     if (!rawPath) return [];
     const substituted = rawPath.replace(ENV_NAME, environment);
     if (substituted.includes('{{') || substituted.includes('://') || substituted.startsWith('ref+')) return [];
     const baseDir = path.dirname(source.uri.fsPath);
     if (!/.*[?*[{].*/.test(substituted)) {
-        const target = substituted.startsWith('/') ? vscode.Uri.file(substituted) : vscode.Uri.file(path.resolve(baseDir, substituted));
+        const target = substituted.startsWith('/') ? fileUri(substituted) : fileUri(path.resolve(baseDir, substituted));
         try {
             return fs.statSync(target.fsPath).isFile() ? [target] : [];
         } catch {
@@ -268,7 +268,7 @@ export function resolveValueFiles(source: SourceFile, rawPath: string, environme
     if (!directoryFile) return [];
     try {
         const matcher = globMatcher(substituted.substring(slash + 1));
-        const result: vscode.Uri[] = [];
+        const result: UriLike[] = [];
         collectGlob(directoryFile, '', matcher, result, { count: 0 });
         result.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
         return result;
@@ -277,7 +277,7 @@ export function resolveValueFiles(source: SourceFile, rawPath: string, environme
     }
 }
 
-function collectGlob(directory: string, prefix: string, matcher: (relative: string) => boolean, result: vscode.Uri[], budget: { count: number }): void {
+function collectGlob(directory: string, prefix: string, matcher: (relative: string) => boolean, result: UriLike[], budget: { count: number }): void {
     let entries: fs.Dirent[];
     try {
         entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -296,7 +296,7 @@ function collectGlob(directory: string, prefix: string, matcher: (relative: stri
             }
             if (!real?.isSymbolicLink()) collectGlob(path.join(directory, entry.name), relative + '/', matcher, result, budget);
         } else if (matcher(relative)) {
-            result.push(vscode.Uri.file(path.join(directory, entry.name)));
+            result.push(fileUri(path.join(directory, entry.name)));
         }
     }
 }
@@ -512,7 +512,7 @@ class Builder {
         }
     }
 
-    private merge(mapping: YMapping, prefix: string, origin: string, scope: string | null, originUri: vscode.Uri): void {
+    private merge(mapping: YMapping, prefix: string, origin: string, scope: string | null, originUri: UriLike): void {
         for (const pair of mapping.pairs) {
             const nodePath = prefix + pair.key;
             const previous = this.values.get(nodePath);
@@ -554,7 +554,7 @@ function previewOf(value: YNode | null): string {
 
 /* Completion keys for a parent path (direct children). */
 /** Declared environment names for a state file (including inherited bases), always containing 'default'. */
-export function environmentNames(uri: vscode.Uri, environment: string): string[] {
+export function environmentNames(uri: UriLike, environment: string): string[] {
     const state = stateFor(uri);
     if (!state) return ['default'];
     const model = valuesModel(state.uri, environment);

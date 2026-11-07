@@ -10,6 +10,7 @@ import { HelmfileDefinitionProvider, HelmfileReferencesProvider, HelmfileRenameP
 import { HelmfileHoverProvider } from './hover';
 import { HelmfileSignatureHelpProvider } from './signatureHelp';
 import { HelmfileInlayHintsProvider } from './inlayHints';
+import type { UriLike } from './language';
 import { HelmfileDiagnostics } from './inspection';
 import { HelmfileCodeLensProvider, HELMFILE_SELECT_ENVIRONMENT, HELMFILE_GOTO_TEMPLATE_PARENT, HELMFILE_FIND_TEMPLATE_USAGES, HELMFILE_RENDER_CHART_TEMPLATE } from './codeLens';
 import { HelmfileSemanticTokensProvider, SEMANTIC_TOKEN_TYPES } from './semanticTokens';
@@ -236,7 +237,7 @@ function activeStateUri(): vscode.Uri | undefined {
 }
 
 /** Repository queries for the refresh action: HTTP index downloads + OCI tag listings in use. */
-function collectQueries(uri: vscode.Uri, environment: string): RepositoryQuery[] {
+function collectQueries(uri: UriLike, environment: string): RepositoryQuery[] {
     const source = readSource(uri);
     if (!source) return [];
     const model = repositoryModel(uri, environment);

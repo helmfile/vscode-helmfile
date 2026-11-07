@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { UriLike } from './language';
 import { projectScope } from './project';
 
 export interface HelmfileSettings {
@@ -60,7 +61,7 @@ export class EnvironmentService implements vscode.Disposable {
 
     constructor(private readonly context: vscode.ExtensionContext) {}
 
-    get(uri?: vscode.Uri): string {
+    get(uri?: UriLike): string {
         return this.context.workspaceState.get<string>(this.key(uri)) || 'default';
     }
 
@@ -71,7 +72,7 @@ export class EnvironmentService implements vscode.Disposable {
         this.emitter.fire(environment);
     }
 
-    private key(uri?: vscode.Uri): string {
+    private key(uri?: UriLike): string {
         const scope = uri ?? vscode.window.activeTextEditor?.document.uri;
         const file = scope?.fsPath;
         return file ? 'helmfile.environment:' + projectScope(file) : 'helmfile.environment';

@@ -1,307 +1,74 @@
 /**
- * Navigation: Go-to-definition and find-references, ported from
- * HelmfileReferences, HelmfileGotoDeclarationHandler and HelmfileUsageSearch.
+ * Navigation providers: thin vscode adapters over the neutral engine in
+ * referenceEngine.ts (which computes file+offset spans and text edits).
  */
 import * as vscode from 'vscode';
-import { TemplateScanner } from './templateScanner';
 import { chartFileOf, chartTemplateContextFor, chartTemplateDetected } from './chartContext';
-import { chartCallsFor, chartDefinesFor, templateCallAt } from './chartDefines';
-import { chartModelFor } from './chartModel';
-import type { ChartTemplateContext } from './chartContext';
 import { offsetRange } from './position';
-import { matchAll } from './language';
-import { valuePathAt } from './valuePath';
-import { nodeAt, pairKeyAt, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
-import { allDefinitions, contentStamp, isHelmfileName, readSource, resolveValueFiles, type SourceFile, type ValuesDefinition } from './values';
+import {
+    allDefinitions,
+    contentStamp,
+    isHelmfileName,
+    readSource,
+    resolveValueFiles,
+    type SourceFile,
+} from './values';
 import { EnvironmentService } from './settings';
-import { alias, isChartField, isDeclaration as isRepositoryDeclaration, repositoryModel } from './repositories';
-import { isDeclaration as isTemplateDeclaration, isInheritance, parents, templateDeclarations, inheritanceScalars } from './templates';
+import { alias, repositoryModel } from './repositories';
+import { parents, templateDeclarations } from './templates';
+import { parseTree } from './yamlTree';
+import {
+    chartTemplateDefinitionAt,
+    chartTemplateReferenceSpans,
+    chartTemplateRenameEdits,
+    chartTemplateRenameSpan,
+    stateDefinitionAt,
+    stateReferenceSpans,
+    type EngineLocation,
+    type ReferenceDeps,
+} from './referenceEngine';
 
-export interface PathFileReference {
-    readonly files: readonly vscode.Uri[];
-    readonly range: vscode.Range;
-}
-
-export interface RepositoryAliasReference {
-    /** Repository declaration pair range in its own document. */
-    readonly target: vscode.Location;
-    readonly alias: string;
-    readonly range: vscode.Range;
-}
-
-export interface ChartFieldReference {
-    readonly chart: string;
-    readonly aliasLength: number;
-    readonly range: vscode.Range;
-}
-
-export interface InheritanceReference {
-    readonly targets: readonly vscode.Location[];
-    readonly range: vscode.Range;
-}
-
-/** String literal argument of readFile/isFile/isDir inside actions. */
-const FILE_FUNCTION = /\b(?:readFile|isFile|isDir)\s*\(\s*(?:"([^"\\]|\\.)*"|'([^'\\]|\\.)*')/g;
-
-export class HelmfileDefinitionProvider implements vscode.DefinitionProvider {
-    constructor(private readonly env: EnvironmentService) {}
-
-    provideDefinition(document: vscode.TextDocument, position: vscode.Position): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
-        const text = document.getText();
-        const offset = document.offsetAt(position);
-        const uri = document.uri;
-
-        // Chart template files: `include "name"` jumps to its `define`.
-        // Values live in the chart's values.yaml, not the Helmfile state
-        // (which may sit above the chart).
-        const chartTemplate = chartTemplateContextFor(chartFileOf(uri), contentStamp());
-        if (chartTemplate) {
-            const call = templateCallAt(text, offset);
-            if (call) {
-                const define = chartDefinesFor(chartTemplate, contentStamp(), { file: uri.fsPath, text })
-                    .find(candidate => candidate.name === call.name);
-                return define ? locationAt(define.file, define.start) : null;
-            }
-            // `.Values.x` → the file+line the effective value was last written
-            // at: the chart's values.yaml or the helmfile state above it.
-            const valuePath = valuePathAt(text, offset);
-            if (valuePath) {
-                const segments = valuePath.key.split('\u001f').filter(segment => segment.length > 0);
-                const origin = chartModelFor(chartTemplate, contentStamp(), this.env.get()).originAt(segments);
-                if (origin) return locationAt(origin.file, origin.offset);
-            }
-            return null;
+/** File-system and state access for the engine, vscode.Uri flavored. */
+const deps: ReferenceDeps = {
+    read: file => readSource(vscode.Uri.file(file))?.text,
+    allDefinitions: (file, environment) =>
+        allDefinitions(vscode.Uri.file(file), environment).map(definition => ({
+            path: definition.path,
+            originFile: definition.originUri.fsPath,
+            keyStart: definition.keyStart,
+            keyEnd: definition.keyEnd,
+        })),
+    resolveValueFiles: (file, text, literal, environment) =>
+        resolveValueFiles({ uri: vscode.Uri.file(file), text, tree: parseTree(text) } as SourceFile, literal, environment).map(uri => uri.fsPath),
+    templateDeclarations: (file, environment) => {
+        const result = new Map<string, { file: string; text: string; keyStart: number; keyEnd: number }>();
+        for (const [name, declaration] of templateDeclarations(vscode.Uri.file(file), environment)) {
+            result.set(name, {
+                file: declaration.source.uri.fsPath,
+                text: declaration.source.text,
+                keyStart: declaration.pair.keyStart,
+                keyEnd: declaration.pair.keyEnd,
+            });
         }
-        if (chartTemplateDetected(chartFileOf(uri), contentStamp())) return null;
-
-        // 1. Values paths inside Go template actions.
-        const valuePath = valuePathAt(text, offset);
-        if (valuePath) {
-            return allDefinitions(uri, this.env.get())
-                .filter(definition => definition.path === valuePath.key)
-                .map(definition => definitionLocation(definition));
-        }
-
-        // 2. Values-file / base / readFile path references.
-        const pathRef = pathFileReferenceAt(uri, text, offset, this.env.get());
-        if (pathRef && pathRef.files.length > 0) {
-            return pathRef.files.map(file => new vscode.Location(file, new vscode.Position(0, 0)));
-        }
-
-        // 3. Repository alias prefix of `chart: alias/name`.
-        const source: SourceFile = { uri, text, tree: parseTree(text) };
-        const chartRef = chartFieldReferenceAt(source, offset);
-        if (chartRef && chartRef.aliasLength > 0) {
-            const model = repositoryModel(uri, this.env.get());
-            const repository = model.entries.find(entry => entry.name === chartRef.chart.slice(0, chartRef.aliasLength));
-            if (repository) return repositoryTarget(repository);
-        }
-
-        // 4. Template inheritance declarations.
-        const inheritance = inheritanceReferenceAt(source, offset, this.env.get());
-        if (inheritance) return [...inheritance.targets];
-
-        // 5. Environment key → reselect (handled by CodeLens in the port).
-        return [];
-    }
-}
-
-export class HelmfileReferencesProvider implements vscode.ReferenceProvider {
-    constructor(private readonly env: EnvironmentService) {}
-
-    async provideReferences(document: vscode.TextDocument, position: vscode.Position, context: vscode.ReferenceContext): Promise<vscode.Location[]> {
-        const uri = document.uri;
-        const offset = document.offsetAt(position);
-        const text = document.getText();
-
-        // Chart template files: references for named templates — on an
-        // `include`/`template` name or on the `define` declaration itself.
-        const chartTemplate = chartTemplateContextFor(chartFileOf(uri), contentStamp());
-        if (chartTemplate) return chartTemplateReferences(uri.fsPath, text, offset, chartTemplate);
-        if (chartTemplateDetected(chartFileOf(uri), contentStamp())) return [];
-
-        const source: SourceFile = { uri, text, tree: parseTree(text) };
-
-        // Repository name declaration → chart usages.
-        const key = pairKeyAt(source.tree, offset);
-        if (key && isRepositoryDeclaration(key)) {
-            const name = scalarPathText(key.value ?? null);
-            if (name) return repositoryUsages(name);
-        }
-
-        // Template declaration → inherit references.
-        if (key && isTemplateDeclaration(key)) {
-            const name = key.key;
-            return templateUsages(uri, name, this.env.get());
-        }
-
-        // Values definition key → path usages across state files.
-        const definition = definitionAt(uri, offset, this.env.get());
-        if (definition) {
-            const suffix = definition.path.split('\u001f').join('.');
-            return valueUsages(definition, suffix, context.includeDeclaration);
-        }
-
-        return [];
-    }
-}
-
-
-/** String argument of readFile/isFile/isDir containing `offset`. */
-export function pathFileReferenceAt(uri: vscode.Uri, text: string, offset: number, environment: string): PathFileReference | null {
-    const action = TemplateScanner.at(text, offset);
-    if (!action) return null;
-    const body = text.slice(action.bodyStart, action.bodyEnd);
-    const bodyOffset = offset - action.bodyStart;
-    for (const match of matchAll(FILE_FUNCTION, body)) {
-        if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
-        const raw = match[1] ?? match[2] ?? '';
-        const literal = unquote(raw);
-        const files = resolveValueFiles({ uri, text, tree: parseTree(text) }, literal, environment);
-        return { files, range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + match[0].length) };
-    }
-    return null;
-}
-
-/** The `chart: alias/name` scalar range and the alias prefix length. */
-export function chartFieldReferenceAt(source: SourceFile, offset: number): ChartFieldReference | null {
-    let current: ReturnType<typeof nodeAt> = nodeAt(source.tree, offset);
-    while (current) {
-        if (current.kind === 'pair') {
-            const pair = current as YPair;
-            const inValue = pair.value && offset >= pair.keyEnd && offset <= pair.value.end;
-            if (inValue && isChartField(pair, 'chart') && pair.value && pair.value.kind === 'scalar') {
-                const chartText = scalarPathText(pair.value);
-                if (chartText && !chartText.includes('{{')) {
-                    const aliasLength = alias(source.uri, chartText)?.length ?? -1;
-                    const quote = quoted(source.text, pair.value.start);
-                    const start = pair.value.start + (quote ? 1 : 0);
-                    return { chart: chartText, aliasLength, range: offsetRange(source.text, start, start + chartText.length) };
-                }
-            }
-            break;
-        }
-        current = current.parent as typeof current;
-    }
-    return null;
-}
-
-/** `inherit: [{template: parent}]` reference at offset. */
-export function inheritanceReferenceAt(source: SourceFile, offset: number, environment: string): InheritanceReference | null {
-    const node = nodeAt(source.tree, offset);
-    let current = node;
-    while (current) {
-        if (current.kind === 'scalar') {
-            const scalar = current;
-            if (isInheritance(scalar) && scalar.value.length > 0 && offset >= scalar.start && offset <= scalar.end) {
-                const declarations = templateDeclarations(source.uri, environment);
-                const declaration = declarations.get(scalar.value);
-                if (declaration) {
-                    return {
-                        targets: [new vscode.Location(declaration.source.uri, offsetRange(declaration.source.text, declaration.pair.keyStart, declaration.pair.keyEnd))],
-                        range: offsetRange(source.text, scalar.start, scalar.end),
-                    };
-                }
-            }
-            break;
-        }
-        current = current.parent as typeof current;
-    }
-    // Declaration → parent template mapping (navigate to parent's body owner).
-    const pair = pairKeyAt(source.tree, offset);
-    if (pair && isTemplateDeclaration(pair)) {
-        const targets = parents(pair, source, environment).map(parent =>
-            new vscode.Location(parent.source.uri, offsetRange(parent.source.text, parent.pair.keyStart, parent.pair.keyEnd)),
-        );
-        if (targets.length) return { targets, range: offsetRange(source.text, pair.keyStart, pair.keyEnd) };
-    }
-    return null;
-}
-
-/** Definition whose key range contains offset (for find-usages of values keys). */
-export function definitionAt(uri: vscode.Uri, offset: number, environment: string): ValuesDefinition | null {
-    return (
-        allDefinitions(uri, environment).find(
-            definition => definition.originUri.toString() === uri.toString() && offset >= definition.keyStart && offset <= definition.keyEnd,
-        ) ?? null
-    );
-}
-
-/** Location of a repository declaration's name (or value) range. */
-function repositoryTarget(repository: { declarationUri: vscode.Uri; targetStart: number; targetEnd: number }): vscode.Location {
-    const source = readSource(repository.declarationUri);
-    return new vscode.Location(repository.declarationUri, offsetRange(source?.text ?? '', repository.targetStart, repository.targetEnd));
-}
-
-function definitionLocation(definition: ValuesDefinition): vscode.Location {
-    const source = readSource(definition.originUri);
-    const text = source?.text ?? '';
-    return new vscode.Location(definition.originUri, offsetRange(text, definition.keyStart, definition.keyEnd));
-}
-
-async function repositoryUsages(name: string): Promise<vscode.Location[]> {
-    const locations: vscode.Location[] = [];
-    for (const file of await stateFiles()) {
-        const source = readSource(file);
-        if (!source) continue;
-        for (const entry of chartPairs(source)) {
-            const chartText = scalarPathText(entry.pair.value);
-            if (!chartText.includes('/')) continue;
-            const prefix = chartText.slice(0, chartText.indexOf('/'));
-            if (prefix !== name) continue;
-            const valueStart = entry.pair.value ? entry.pair.value.start + (quoted(source.text, entry.pair.value.start) ? 1 : 0) : entry.pair.keyEnd;
-            locations.push(new vscode.Location(file, offsetRange(source.text, valueStart, valueStart + prefix.length)));
-        }
-    }
-    return locations;
-}
-
-async function templateUsages(uri: vscode.Uri, name: string, environment: string): Promise<vscode.Location[]> {
-    const locations: vscode.Location[] = [];
-    for (const file of await stateFiles()) {
-        const source = readSource(file);
-        if (!source) continue;
-        for (const item of inheritanceScalars(source)) {
-            if (item.name !== name) continue;
-            locations.push(new vscode.Location(file, offsetRange(source.text, item.scalar.start, item.scalar.end)));
-        }
-    }
-    return locations;
-}
-
-async function valueUsages(definition: ValuesDefinition, dottedSuffix: string, includeDeclaration: boolean): Promise<vscode.Location[]> {
-    const locations: vscode.Location[] = [];
-    const needles = unique([
-        '.Values.' + dottedSuffix,
-        '.StateValues.' + dottedSuffix,
-        '.Environment.Values.' + dottedSuffix,
-        '$.Values.' + dottedSuffix,
-    ]);
-    for (const file of await stateFiles()) {
-        const source = readSource(file);
-        if (!source) continue;
-        const text = source.text;
-        for (const needle of needles) {
-            let index = text.indexOf(needle);
-            while (index >= 0) {
-                const after = index + needle.length;
-                // Boundary on both ends: `my.Values.x` is not a reference to
-                // `.Values.x`, and `$.Values.x` must not match twice (the
-                // leading `$` fails the before-boundary for the bare needle).
-                const boundary =
-                    (after >= text.length ? true : !/[A-Za-z0-9_.]/.test(text[after])) &&
-                    (index === 0 ? true : !/[A-Za-z0-9_$]/.test(text[index - 1]));
-                if (boundary) locations.push(new vscode.Location(file, offsetRange(text, index, after)));
-                index = text.indexOf(needle, index + 1);
-            }
-        }
-    }
-    if (includeDeclaration) {
-        const origin = readSource(definition.originUri);
-        locations.unshift(new vscode.Location(definition.originUri, offsetRange(origin?.text ?? '', definition.keyStart, definition.keyEnd)));
-    }
-    return locations;
-}
+        return result;
+    },
+    parents: (file, text, pair, environment) =>
+        parents(pair, { uri: vscode.Uri.file(file), text, tree: parseTree(text) } as SourceFile, environment).map(parent => ({
+            file: parent.source.uri.fsPath,
+            text: parent.source.text,
+            keyStart: parent.pair.keyStart,
+            keyEnd: parent.pair.keyEnd,
+        })),
+    repositoryEntries: (file, environment) =>
+        repositoryModel(vscode.Uri.file(file), environment).entries.map(entry => ({
+            name: entry.name,
+            declarationFile: entry.declarationUri.fsPath,
+            targetStart: entry.targetStart,
+            targetEnd: entry.targetEnd,
+        })),
+    alias: (file, chartText) => alias(vscode.Uri.file(file), chartText),
+    stateFiles: async () => (await stateFiles()).map(uri => uri.fsPath),
+};
 
 let stateFilesCache: { stamp: number; files: vscode.Uri[] } | null = null;
 
@@ -319,34 +86,52 @@ async function stateFiles(): Promise<vscode.Uri[]> {
     return result;
 }
 
-/** All `chart:` scalar pairs in the state file (releases, dependencies, templates). */
-function chartPairs(source: SourceFile): { pair: YPair; value: { start: number; end: number } | null }[] {
-    const result: { pair: YPair; value: { start: number; end: number } | null }[] = [];
-    for (const doc of source.tree.docs) {
-        if (!doc.root) continue;
-        walkAll(doc.root, node => {
-            if (node.kind !== 'pair') return;
-            const pair = node as YPair;
-            if (pair.value && pair.value.kind === 'scalar' && isChartField(pair, 'chart')) {
-                result.push({ pair, value: { start: pair.value.start, end: pair.value.end } });
-            }
-        });
+/** Engine span → vscode location (open buffers preferred for the text). */
+function toLocation(location: EngineLocation): vscode.Location {
+    const text = readSource(vscode.Uri.file(location.file))?.text ?? '';
+    return new vscode.Location(vscode.Uri.file(location.file), offsetRange(text, location.start, location.end));
+}
+
+export class HelmfileDefinitionProvider implements vscode.DefinitionProvider {
+    constructor(private readonly env: EnvironmentService) {}
+
+    provideDefinition(document: vscode.TextDocument, position: vscode.Position): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
+        const text = document.getText();
+        const offset = document.offsetAt(position);
+        const file = document.uri.fsPath;
+
+        // Chart template files: `include "name"` jumps to its `define`.
+        // Values live in the chart's values.yaml, not the Helmfile state
+        // (which may sit above the chart).
+        const chartTemplate = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
+        if (chartTemplate) {
+            const span = chartTemplateDefinitionAt(file, text, offset, chartTemplate, this.env.get());
+            return span ? toLocation(span) : null;
+        }
+        if (chartTemplateDetected(chartFileOf(document.uri), contentStamp())) return null;
+
+        const spans = stateDefinitionAt(file, text, offset, this.env.get(), deps);
+        return spans ? spans.map(toLocation) : [];
     }
-    return result;
 }
 
-function unquote(raw: string): string {
-    return raw.slice(1, -1).replace(/\\(.)/g, '$1');
-}
+export class HelmfileReferencesProvider implements vscode.ReferenceProvider {
+    constructor(private readonly env: EnvironmentService) {}
 
-function quoted(text: string, start: number): boolean {
-    return start > 0 && (text[start - 1] === '"' || text[start - 1] === "'");
-}
+    async provideReferences(document: vscode.TextDocument, position: vscode.Position, context: vscode.ReferenceContext): Promise<vscode.Location[]> {
+        const offset = document.offsetAt(position);
+        const text = document.getText();
+        const file = document.uri.fsPath;
 
+        // Chart template files: references for named templates — on an
+        // `include`/`template` name or on the `define` declaration itself.
+        const chartTemplate = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
+        if (chartTemplate) return chartTemplateReferences(file, text, offset, chartTemplate);
+        if (chartTemplateDetected(chartFileOf(document.uri), contentStamp())) return [];
 
-
-function unique(values: string[]): string[] {
-    return [...new Set(values)];
+        const spans = await stateReferenceSpans(file, text, offset, this.env.get(), context.includeDeclaration, deps);
+        return spans.map(toLocation);
+    }
 }
 
 /**
@@ -354,110 +139,35 @@ function unique(values: string[]): string[] {
  * name or on the `define` declaration itself, every declaration and call
  * site of that template across the chart's template files.
  */
-export function chartTemplateReferences(currentFile: string, text: string, offset: number, context: ChartTemplateContext): vscode.Location[] {
-    const stamp = contentStamp();
-    const current = { file: currentFile, text };
-    const target = templateCallAt(text, offset)?.name
-        ?? declarationNameAt(chartDefinesFor(context, stamp, current), currentFile, text, offset)?.name;
-    if (!target) return [];
-    const locations: vscode.Location[] = [];
-    for (const define of chartDefinesFor(context, stamp, current)) {
-        if (define.name === target) {
-            const location = locationAt(define.file, define.start);
-            if (location) locations.push(location);
-        }
-    }
-    for (const call of chartCallsFor(context, stamp, current)) {
-        if (call.name !== target) continue;
-        const location = locationAt(call.file, call.start);
-        if (location) locations.push(location);
-    }
-    return locations.filter((location, index) => locations.findIndex(other => other.uri.toString() === location.uri.toString() && other.range.isEqual(location.range)) === index);
-}
-
-/** Location of an offset in a file, preferring open documents via readSource. */
-function locationAt(file: string, offset: number): vscode.Location | null {
-    const text = readSource(vscode.Uri.file(file))?.text;
-    if (text === undefined) return null;
-    const before = text.slice(0, offset);
-    const line = (before.match(/\n/g) ?? []).length;
-    const character = offset - (before.lastIndexOf('\n') + 1);
-    return new vscode.Location(vscode.Uri.file(file), new vscode.Position(line, character));
-}
-
-/** Name and literal span of the `define` whose quoted name contains `offset`, if any. */
-function declarationNameAt(defines: readonly { name: string; file: string; start: number }[], currentFile: string, text: string, offset: number): { name: string; start: number; end: number } | null {
-    for (const define of defines) {
-        if (define.file !== currentFile) continue;
-        if (offset < define.start || offset > define.start + 200) continue;
-        const match = /"((?:[^"\\]|\\.)*)"/.exec(text.slice(define.start, define.start + 200));
-        if (!match) continue;
-        const start = define.start + (match.index ?? 0) + 1;
-        const end = start + match[1].length;
-        if (offset >= start - 1 && offset <= end + 1) return { name: define.name, start, end };
-    }
-    return null;
-}
-
-/** Literal span of `name` inside a `{{ define "name" }}` header, without the quotes. */
-function defineLiteralSpan(define: { name: string; file: string; start: number }, text: string): { start: number; end: number } | null {
-    const header = text.slice(define.start, define.start + 200);
-    const match = /"((?:[^"\\]|\\.)*)"/.exec(header);
-    if (!match || match[1] !== define.name) return null;
-    const start = define.start + (match.index ?? 0) + 1;
-    return { start, end: start + define.name.length };
+export function chartTemplateReferences(currentFile: string, text: string, offset: number, context: Parameters<typeof chartTemplateReferenceSpans>[3]): vscode.Location[] {
+    return chartTemplateReferenceSpans(currentFile, text, offset, context, deps).map(toLocation);
 }
 
 /** Rename a named template: the `{{ define }}` declaration plus every include/template call. */
 export class HelmfileRenameProvider implements vscode.RenameProvider {
     prepareRename(document: vscode.TextDocument, position: vscode.Position): vscode.Range | null {
-        const uri = document.uri;
-        const context = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        const file = document.uri.fsPath;
+        const context = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
         if (!context) return null;
         const text = document.getText();
         const offset = document.offsetAt(position);
-        const call = templateCallAt(text, offset);
-        if (call) return offsetRange(text, call.start, call.end);
-        const current = { file: uri.fsPath, text };
-        const declaration = declarationNameAt(chartDefinesFor(context, contentStamp(), current), uri.fsPath, text, offset);
-        return declaration ? offsetRange(text, declaration.start, declaration.end) : null;
+        const span = chartTemplateRenameSpan(file, text, offset, context);
+        return span ? offsetRange(text, span.start, span.end) : null;
     }
 
     provideRenameEdits(document: vscode.TextDocument, position: vscode.Position, newName: string): vscode.WorkspaceEdit | null {
-        const name = newName.trim();
-        if (name.length === 0 || name.length > 200 || /["'\\\r\n]/.test(name)) return null;
-        const uri = document.uri;
-        const context = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        const file = document.uri.fsPath;
+        const context = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
         if (!context) return null;
         const text = document.getText();
         const offset = document.offsetAt(position);
-        const stamp = contentStamp();
-        const current = { file: uri.fsPath, text };
-        const target = templateCallAt(text, offset)?.name
-            ?? declarationNameAt(chartDefinesFor(context, stamp, current), uri.fsPath, text, offset)?.name;
-        if (!target) return null;
-        const textOf = (file: string): string | undefined => readSource(vscode.Uri.file(file))?.text;
-        const rangeAt = (file: string, start: number, end: number): vscode.Range | null => {
-            const body = textOf(file);
-            if (body === undefined) return null;
-            return offsetRange(body, start, end);
-        };
+        const edits = chartTemplateRenameEdits(file, text, offset, newName, context, deps);
+        if (!edits) return null;
         const edit = new vscode.WorkspaceEdit();
-        let touched = 0;
-        for (const define of chartDefinesFor(context, stamp, current)) {
-            if (define.name !== target) continue;
-            const body = textOf(define.file);
-            if (body === undefined) continue;
-            const span = defineLiteralSpan(define, body);
-            if (!span) continue;
-            const range = rangeAt(define.file, span.start, span.end);
-            if (range) { edit.replace(vscode.Uri.file(define.file), range, name); touched++; }
+        for (const change of edits) {
+            const body = readSource(vscode.Uri.file(change.file))?.text ?? '';
+            edit.replace(vscode.Uri.file(change.file), offsetRange(body, change.start, change.end), change.newText);
         }
-        for (const call of chartCallsFor(context, stamp, current)) {
-            if (call.name !== target) continue;
-            const range = rangeAt(call.file, call.start, call.end);
-            if (range) { edit.replace(vscode.Uri.file(call.file), range, name); touched++; }
-        }
-        return touched > 0 ? edit : null;
+        return edit;
     }
 }

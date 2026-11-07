@@ -7,9 +7,9 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YMapping, type YNode, type YPair, type YSequence, type YTree } from './yamlTree';
 import { readSource, resolveValueFiles, stateFor, type SourceFile } from './values';
+import { fileUri } from './language';
 import type { ChartTemplateContext } from './chartContext';
 
 export interface ChartKey {
@@ -176,7 +176,7 @@ function applyTree(values: Record<string, unknown>, sources: Map<string, string>
  * matching helmfile's precedence (later wins).
  */
 function applyStateOverlay(chartRoot: string, values: Record<string, unknown>, sources: Map<string, string>, locations: Map<string, ChartValueOrigin>, environment: string): void {
-    const state = stateFor(vscode.Uri.file(path.join(chartRoot, 'Chart.yaml')));
+    const state = stateFor(fileUri(path.join(chartRoot, 'Chart.yaml')));
     if (!state) return;
     const stateDir = path.dirname(state.uri.fsPath);
     for (const doc of state.tree.docs) {

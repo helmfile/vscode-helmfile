@@ -5,10 +5,10 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
 import { isInheritance, templateDeclarations } from './templates';
 import { schemaContext } from './schema';
 import { SourceFile, contentStamp, readSource, resolveValueFiles, stateFor, valuesModel } from './values';
+import type { UriLike } from './language';
 import { YMapping, YPair, YScalar, ancestors, mappingGet, rootMappings, scalarPathText } from './yamlTree';
 
 export interface Access {
@@ -38,7 +38,7 @@ export function downloadable(access: Access): boolean {
 export interface Repository {
     readonly name: string;
     readonly declaration: YPair;
-    readonly declarationUri: vscode.Uri;
+    readonly declarationUri: UriLike;
     /** Declaration value node when present, otherwise the key. */
     readonly targetStart: number;
     readonly targetEnd: number;
@@ -61,7 +61,7 @@ const VALUE = /\{\{-?\s*(\$?\.(?:Values|StateValues|Environment\.Values)\.[A-Za-
 const modelCache = new Map<string, RepositoryModel>();
 let modelCacheStamp = -1;
 
-export function repositoryModel(uri: vscode.Uri, environment: string): RepositoryModel {
+export function repositoryModel(uri: UriLike, environment: string): RepositoryModel {
     const stamp = contentStamp();
     if (stamp !== modelCacheStamp) {
         // Content changed: earlier generations would otherwise stay referenced
@@ -113,7 +113,7 @@ export function value(source: SourceFile, mapping: YMapping | null, key: string)
 }
 
 /** Substitute static state values and the environment name inside `input`. */
-export function resolved(uri: vscode.Uri, environment: string, input: string): string {
+export function resolved(uri: UriLike, environment: string, input: string): string {
     return input.replace(VALUE, match => {
         const inner = match.replace(/^\{\{-?\s*/, '').replace(/\s*-?}}$/, '');
         if (inner === '.Environment.Name') return environment;
@@ -169,7 +169,7 @@ function inheritScalars(items: readonly unknown[]): YScalar[] {
 }
 
 /** Repository alias prefix of a chart reference, or null when not a repository reference. */
-export function alias(uri: vscode.Uri, chartText: string): string | null {
+export function alias(uri: UriLike, chartText: string): string | null {
     if (
         !chartText.trim() ||
         chartText.includes('{{') ||
@@ -192,7 +192,7 @@ export function alias(uri: vscode.Uri, chartText: string): string | null {
     return slash > 0 ? chartText.substring(0, slash) : null;
 }
 
-export function query(uri: vscode.Uri, chartText: string, environment: string): RepositoryQuery | null {
+export function query(uri: UriLike, chartText: string, environment: string): RepositoryQuery | null {
     if (!chartText.trim() || chartText.includes('{{')) return null;
     const repositories = namedMap(repositoryModel(uri, environment).entries);
     if (chartText.startsWith('oci://')) {

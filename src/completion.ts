@@ -22,7 +22,7 @@ import { repositoryService } from './repositoryService';
 import { contextualCompletions, localChartCompletions } from './contextualCompletion';
 import { offsetRange } from './position';
 import { computeActionCompletions, chartKeyDetail, type ActionCompletionDeps } from './completionEngine';
-import type { Completion, CompletionKind } from './language';
+import type { Completion, CompletionKind, UriLike } from './language';
 
 const KIND: Record<CompletionKind, vscode.CompletionItemKind> = {
     function: vscode.CompletionItemKind.Function,
@@ -84,7 +84,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         if (repository) return repository;
 
         const contextual = contextualCompletions(source, offset, this.env());
-        if (contextual) return contextual;
+        if (contextual) return toCompletionList(contextual, text);
 
         return this.fieldCompletions(source, offset);
     }
@@ -107,9 +107,8 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
 
         if (field === 'chart') {
             if (value.startsWith('.')) {
-                const list = localChartCompletions(source, value);
-                for (const item of list.items) item.range = replace;
-                return list;
+                const span = { start: offset - value.length, end: offset };
+                return toCompletionList(localChartCompletions(source, value, span), source.text);
             }
             return this.chartCompletions(source.uri, env, value, replace);
         }
@@ -120,7 +119,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         return this.versionCompletions(source, mapping, env, replace);
     }
 
-    private chartCompletions(uri: vscode.Uri, env: string, value: string, replace: vscode.Range): vscode.CompletionList {
+    private chartCompletions(uri: UriLike, env: string, value: string, replace: vscode.Range): vscode.CompletionList {
         const model = repositoryModel(uri, env);
         const slash = value.indexOf('/');
         const aliasPart = slash >= 0 ? value.slice(0, slash) : value;

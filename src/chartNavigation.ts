@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import { mappingGet, pairKeyAt, scalarPathText } from './yamlTree';
 import { stateFor, environmentNames, type SourceFile } from './values';
 import { allDefinitions } from './values';
+import type { UriLike } from './language';
 import { EnvironmentService, settings } from './settings';
 import { query as repositoryQuery } from './repositories';
 import { clean, reason } from './downloadDiagnostics';
@@ -303,7 +304,7 @@ async function openLocal(source: SourceFile, chart: string): Promise<void> {
     void vscode.window.showWarningMessage('Helmfile', `The chart at ${chart} has no Chart.yaml.`);
 }
 
-async function pickEnvironment(env: EnvironmentService, uri: vscode.Uri): Promise<string | undefined> {
+async function pickEnvironment(env: EnvironmentService, uri: UriLike): Promise<string | undefined> {
     const state = stateFor(uri);
     // environmentNames includes template-inferred environments (dynamic
     // `range`-generated keys), not just literal ones.

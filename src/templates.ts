@@ -3,7 +3,7 @@
  * the IntelliJ plugin. Template mappings are shared across base states.
  */
 
-import * as vscode from 'vscode';
+import type { UriLike } from './language';
 import { SourceFile, contentStamp, readSource, resolveValueFiles, stateFor } from './values';
 import { YMapping, YPair, YScalar, ancestors, mappingGet, rootMappings, scalarPathText, walkAll } from './yamlTree';
 
@@ -34,7 +34,7 @@ export function isDeclaration(pair: YPair | null): boolean {
 const declarationCache = new Map<string, Map<string, TemplateDeclaration>>();
 let declarationCacheStamp = -1;
 
-export function templateDeclarations(uri: vscode.Uri, environment: string): Map<string, TemplateDeclaration> {
+export function templateDeclarations(uri: UriLike, environment: string): Map<string, TemplateDeclaration> {
     const stamp = contentStamp();
     if (stamp !== declarationCacheStamp) {
         // Content changed: earlier generations would otherwise stay referenced

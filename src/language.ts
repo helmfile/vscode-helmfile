@@ -102,3 +102,12 @@ export function matchAll(pattern: RegExp, text: string): RegExpMatchArray[] {
     }
     return result;
 }
+
+/** Structural stand-in for editor URIs: vscode.Uri satisfies it, and a
+ * plain object covers engine-internal file references. */
+export type UriLike = { readonly fsPath: string; toString(): string };
+
+/** Neutral Uri factory for engine-side file references (cache key + fsPath). */
+export function fileUri(fsPath: string): UriLike {
+    return { fsPath, toString: () => `file://${fsPath}` };
+}

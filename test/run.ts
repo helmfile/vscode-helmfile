@@ -25,7 +25,7 @@ import { valuePathAt } from '../src/valuePath';
 import { schemaContext } from '../src/schema';
 import { parseCompletionPath, parseTree } from '../src/yamlTree';
 import { tokenizeAction, SEMANTIC_TOKEN_TYPES, HelmfileSemanticTokensProvider } from '../src/semanticTokens';
-import { helmfileSymbols } from '../src/documentSymbol';
+import { helmfileSymbols } from '../src/symbolEngine';
 import { HelmfileCodeActionProvider } from '../src/codeActions';
 
 const EXAMPLES = path.resolve(__dirname, '../examples');
@@ -104,7 +104,7 @@ function eq(actual: unknown, expected: unknown, name: string): void {
     check('example envPath found', envPath > 0);
     const files = resolveValueFiles(source, 'values/common.yaml', 'prod');
     eq(files.length, 1, 'resolveValueFiles common.yaml');
-    check('resolved under values/', files[0]?.path.endsWith(path.join('values', 'common.yaml')) === true, files[0]?.path);
+    check('resolved under values/', files[0]?.fsPath.endsWith(path.join('values', 'common.yaml')) === true, files[0]?.fsPath);
 }
 
 // ---------------------------------------------------------------- repositories
@@ -152,17 +152,17 @@ function eq(actual: unknown, expected: unknown, name: string): void {
     check('fieldContextAt resolves needs item', needsField?.key === 'needs' && needsField.path.includes('releases'), JSON.stringify(needsField));
     eq(needsField?.typed ?? '', 'l', 'needs typed text');
     const needsList = contextualCompletions(ctxSource, needsOffset, 'production');
-    check('needs offers release names', needsList != null && needsList.items.some(i => i.label === 'grafana'), JSON.stringify(needsList?.items.map(i => i.label)));
+    check('needs offers release names', needsList != null && needsList.some(i => i.label === 'grafana'), JSON.stringify(needsList?.map(i => i.label)));
 
     const conditionOffset = ctxText.indexOf('condition: ') + 'condition: '.length;
     const conditionList = contextualCompletions(ctxSource, conditionOffset, 'production');
-    check('condition offers release flags', conditionList != null && conditionList.items.some(i => i.label === 'grafana.enabled'), JSON.stringify(conditionList?.items.map(i => i.label)));
+    check('condition offers release flags', conditionList != null && conditionList.some(i => i.label === 'grafana.enabled'), JSON.stringify(conditionList?.map(i => i.label)));
 
     const valuesOffset = ctxText.indexOf('- va') + '- v'.length;
     const valuesField = fieldContextAt(ctxSource, valuesOffset);
     check('fieldContextAt resolves values item', valuesField?.key === 'values' && valuesField.path.includes('releases'), JSON.stringify(valuesField));
     const valuesList = contextualCompletions(ctxSource, valuesOffset, 'production');
-    check('values offers files from disk', valuesList != null && valuesList.items.some(i => String(i.label).startsWith('values/')), JSON.stringify(valuesList?.items.slice(0, 3).map(i => i.label)));
+    check('values offers files from disk', valuesList != null && valuesList.some(i => String(i.label).startsWith('values/')), JSON.stringify(valuesList?.slice(0, 3).map(i => i.label)));
 
     const inheritOffset = ctxText.indexOf('  logging:') + 3;
     const inheritSource = { ...ctxSource, text: ctxText.replace('    needs:\n      - lo', '    inherit:\n      - log'), tree: parseTree(ctxText.replace('    needs:\n      - lo', '    inherit:\n      - log')) };
@@ -171,7 +171,7 @@ function eq(actual: unknown, expected: unknown, name: string): void {
     const { setOpenDocument, closeOpenDocument } = require('../src/values') as typeof import('../src/values');
     setOpenDocument(inheritSource.uri, 1, inheritSource.text);
     const inheritList = contextualCompletions(inheritSource, inheritSource.text.indexOf('- log') + 2, 'production');
-    check('inherit offers template declarations', inheritList != null && inheritList.items.some(i => i.label === 'logging'), JSON.stringify(inheritList?.items.map(i => i.label)));
+    check('inherit offers template declarations', inheritList != null && inheritList.some(i => i.label === 'logging'), JSON.stringify(inheritList?.map(i => i.label)));
     closeOpenDocument(inheritSource.uri);
 
     const kubeFixture = path.join(fs.mkdtempSync('helmfile-kube-'), 'config');
@@ -338,7 +338,7 @@ entries:
 {
     const nested = vscode.Uri.file(path.join(EXAMPLES, 'values', 'common.yaml'));
     const state = stateFor(nested);
-    check('stateFor walks up from values/', state?.uri.path.endsWith('helmfile.yaml.gotmpl') === true, state?.uri.path);
+    check('stateFor walks up from values/', state?.uri.fsPath.endsWith('helmfile.yaml.gotmpl') === true, state?.uri.fsPath);
     eq(stateFor(vscode.Uri.file('/tmp/other.yaml')), null, 'stateFor unrelated file');
 
     eq(isStateFileName(path.join('ws', 'helmfile.d', '10-ingress.yaml')), true, 'helmfile.d fragment is a state file');
@@ -1042,14 +1042,14 @@ entries:
         const rootValuesField = fieldContextAt(source, rootValuesOffset);
         check('root values list detected as sequence field', rootValuesField?.key === 'values' && rootValuesField.sequenceValue === true, JSON.stringify(rootValuesField));
         const rootValuesList = contextualCompletions(source, rootValuesOffset, 'production');
-        check('root values list completes values files', rootValuesList != null && rootValuesList.items.some(i => String(i.label).startsWith('values/common.yaml')), JSON.stringify(rootValuesList?.items.slice(0, 3).map(i => i.label)));
+        check('root values list completes values files', rootValuesList != null && rootValuesList.some(i => String(i.label).startsWith('values/common.yaml')), JSON.stringify(rootValuesList?.slice(0, 3).map(i => i.label)));
         const inlineText = 'values:\n  key: va';
         const inlineSource = { uri: vscode.Uri.file(statePath), text: inlineText, tree: parseTree(inlineText) };
         const inlineField = fieldContextAt(inlineSource, inlineText.indexOf('key:') + 2);
         check('inline root values key is not a file list', inlineField?.key === 'key' && contextualCompletions(inlineSource, inlineText.indexOf('key:') + 2, 'production') === null, JSON.stringify(inlineField));
         const conditionOffset = text.indexOf('condition: ') + 'condition: '.length;
         const conditionList = contextualCompletions(source, conditionOffset, 'production');
-        check('condition offers keys from values files', conditionList != null && conditionList.items.some(i => i.label === '.Values.install.enabled'), JSON.stringify(conditionList?.items.map(i => i.label)));
+        check('condition offers keys from values files', conditionList != null && conditionList.some(i => i.label === '.Values.install.enabled'), JSON.stringify(conditionList?.map(i => i.label)));
     } finally {
         fs.rmSync(projectDir, { recursive: true, force: true });
     }
@@ -1147,7 +1147,7 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
         const source = { uri: vscode.Uri.file(statePath), text, tree: parseTree(text) };
         const setOffset = text.indexOf('- name: ', text.indexOf('set:')) + '- name: '.length;
         const setList = contextualCompletions(source, setOffset, 'default');
-        check('set name completes chart key paths', setList != null && setList.items.some(i => i.label === 'image.repository'), JSON.stringify(setList && setList.items.map(i => i.label)));
+        check('set name completes chart key paths', setList != null && setList.some(i => i.label === 'image.repository'), JSON.stringify(setList && setList.map(i => i.label)));
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2098,7 +2098,7 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
 
 // Route B engine extraction: engines are editor-neutral and callable without vscode.
 {
-    for (const engine of ['language.ts', 'valuePath.ts', 'hoverEngine.ts', 'completionEngine.ts', 'functionCatalog.ts']) {
+    for (const engine of ['language.ts', 'valuePath.ts', 'hoverEngine.ts', 'completionEngine.ts', 'functionCatalog.ts', 'inspectionEngine.ts', 'referenceEngine.ts', 'codeActionEngine.ts', 'signatureEngine.ts', 'selectionEngine.ts', 'foldingEngine.ts', 'symbolEngine.ts', 'inlayEngine.ts', 'lensEngine.ts', 'contextualCompletion.ts']) {
         const source = fs.readFileSync(path.join(__dirname, '..', 'src', engine), 'utf8');
         check(`engine ${engine} stays editor-neutral`, !/from 'vscode'/.test(source), 'imports vscode');
     }
