@@ -8,10 +8,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
 import { chartFileOf, chartTemplateContextFor, chartTemplateDetected, type ChartTemplateContext } from './chartContext';
-import { chartDefinesFor } from './chartDefines';
+import { chartCallsFor, chartDefinesFor } from './chartDefines';
 import { conditionalSpans, variableScopeIssues } from './chartIteration';
 import { chartModelFor } from './chartModel';
-import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar, type YTree } from './yamlTree';
+import { mappingGet, parseTree, rootMappings, scalarPathText, walkAll, type YPair, type YScalar, type YTree } from './yamlTree';
 import { contentStamp, isHelmfileName, type SourceFile } from './values';
 import { offsetRange } from './position';
 import { alias, chart as chartOf, downloadable, namedMap, repositoryModel, value, query as repositoryQuery, isChartField } from './repositories';
@@ -37,7 +37,8 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     }
 
     track(document: vscode.TextDocument): void {
-        if (document.languageId !== 'helmfile' && !isHelmfileName(document.uri.path.split('/').pop() ?? '')) return;
+        const name = document.uri.path.split('/').pop() ?? '';
+        if (document.languageId !== 'helmfile' && !isHelmfileName(name) && !isChartManifestName(name)) return;
         this.documents.add(document.uri);
         // Typing bursts re-parse YAML + repositories; debounce to keep edits smooth.
         const key = document.uri.toString();
@@ -67,6 +68,14 @@ export class HelmfileDiagnostics implements vscode.Disposable {
     analyze(document: vscode.TextDocument): void {
         const text = document.getText();
         const diagnostics: vscode.Diagnostic[] = [];
+        // Chart.yaml is a plain YAML manifest: syntax check plus dependency
+        // sanity, never Helm template rules.
+        if (isChartManifestName(path.basename(document.uri.fsPath))) {
+            yamlSyntaxErrors(document, diagnostics);
+            chartYamlDependencyDiagnostics(document, diagnostics);
+            this.collection.set(document.uri, diagnostics);
+            return;
+        }
         // Only YAML-like files get the YAML syntax check. `.tpl`, NOTES.txt
         // and bare `.gotmpl` files are Go template fragments, never parsed
         // as YAML by Helm either.
@@ -82,6 +91,7 @@ export class HelmfileDiagnostics implements vscode.Disposable {
                 schemaUnknownKeyDiagnostics(document, chartContext, diagnostics);
                 variableScopeDiagnostics(document, diagnostics);
                 duplicateDefineDiagnostics(document, chartContext, diagnostics);
+                unusedDefineDiagnostics(document, chartContext, diagnostics);
             }
             this.collection.set(document.uri, diagnostics);
             return;
@@ -568,7 +578,7 @@ function diagnosticAt(source: SourceFile, start: number, end: number, message: s
 export const missingChartDefines = new WeakMap<vscode.Diagnostic, { name: string; helpers: string }>();
 
 /** Quick-fix payload for schema-unknown-key diagnostics: dotted path + schema file + JSON type to declare. */
-export const schemaUnknownKeys = new WeakMap<vscode.Diagnostic, { segments: string[]; schemaFile: string; type: string }>();
+export const schemaUnknownKeys = new WeakMap<vscode.Diagnostic, { segments: string[]; schemaFile: string; valuesFile: string; type: string }>();
 
 const INCLUDE_NAME = /\b(?:include|template)\s+"((?:[^"\\]|\\.)*)"/g;
 
@@ -626,7 +636,7 @@ function schemaUnknownKeyDiagnostics(document: vscode.TextDocument, context: Cha
             const diagnostic = new vscode.Diagnostic(offsetRange(text, start, start + match[0].length), reason, vscode.DiagnosticSeverity.Warning);
             diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
             const kind = model.valueAt(segments)?.kind;
-            schemaUnknownKeys.set(diagnostic, { segments, schemaFile, type: kind === 'map' ? 'object' : kind === 'list' ? 'array' : 'string' });
+            schemaUnknownKeys.set(diagnostic, { segments, schemaFile, valuesFile: path.join(context.root, 'values.yaml'), type: kind === 'map' ? 'object' : kind === 'list' ? 'array' : 'string' });
             diagnostics.push(diagnostic);
         }
     }
@@ -673,6 +683,147 @@ function duplicateDefineDiagnostics(document: vscode.TextDocument, context: Char
         const start = literal > 0 ? define.start + literal + 1 : define.start;
         const diagnostic = new vscode.Diagnostic(offsetRange(text, start, start + define.name.length), `Duplicate define "${define.name}": also defined ${where}`, vscode.DiagnosticSeverity.Warning);
         diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+        diagnostics.push(diagnostic);
+    }
+}
+
+/* ---------------- Chart.yaml dependency diagnostics ---------------- */
+
+const CHART_MANIFEST_NAME = /^Chart\.ya?ml$/i;
+
+export function isChartManifestName(name: string): boolean {
+    return CHART_MANIFEST_NAME.test(name);
+}
+
+interface VendoredDependency {
+    /** Version found in the vendored copy, when known. */
+    readonly version: string | null;
+}
+
+/** charts/<name>/ directory (with its own Chart.yaml) or a charts/<name>-<version>.tgz archive. */
+function vendoredDependency(chartsDir: string, name: string, version: string, archives: () => string[]): VendoredDependency | null {
+    const dir = path.join(chartsDir, name);
+    if (fs.existsSync(path.join(dir, 'Chart.yaml')) || fs.existsSync(path.join(dir, 'Chart.yml'))) {
+        try {
+            const manifest = parseTree(fs.readFileSync(fs.existsSync(path.join(dir, 'Chart.yaml')) ? path.join(dir, 'Chart.yaml') : path.join(dir, 'Chart.yml'), 'utf8'));
+            const versionPair = rootMappings(manifest).map(root => mappingGet(root, 'version'))[0];
+            const vendoredVersion = versionPair?.value?.kind === 'scalar' ? scalarPathText(versionPair.value).trim() : '';
+            return { version: vendoredVersion || null };
+        } catch {
+            return { version: null };
+        }
+    }
+    if (version) {
+        const exact = `${name}-${version}.tgz`;
+        if (archives().includes(exact)) return { version };
+    }
+    const prefix = `${name}-`;
+    const loose = archives().find(archive => archive.startsWith(prefix));
+    if (loose) {
+        const looseVersion = loose.slice(prefix.length).replace(/\.tgz$/, '');
+        return { version: looseVersion || null };
+    }
+    return null;
+}
+
+/**
+ * `dependencies:` sanity for Chart.yaml: every entry either declares a
+ * repository (fetchable) or is vendored under charts/, and a pinned version
+ * matches the vendored copy.
+ */
+export function chartYamlDependencyDiagnostics(document: vscode.TextDocument, diagnostics: vscode.Diagnostic[]): void {
+    const text = document.getText();
+    const tree = parseTree(text);
+    const depsPair = rootMappings(tree).map(root => mappingGet(root, 'dependencies')).find(pair => pair?.value?.kind === 'sequence');
+    if (!depsPair || depsPair.value?.kind !== 'sequence') return;
+    const chartsDir = path.join(path.dirname(document.uri.fsPath), 'charts');
+    let cachedArchives: string[] | null = null;
+    const archives = (): string[] => {
+        if (cachedArchives === null) {
+            try {
+                cachedArchives = fs.readdirSync(chartsDir).filter(file => file.endsWith('.tgz'));
+            } catch {
+                cachedArchives = [];
+            }
+        }
+        return cachedArchives;
+    };
+    for (const item of depsPair.value.items) {
+        if (item.kind !== 'mapping') continue;
+        const namePair = mappingGet(item, 'name');
+        const name = namePair?.value?.kind === 'scalar' ? scalarPathText(namePair.value).trim() : '';
+        if (!name) continue;
+        const scalarOf = (key: string): string => {
+            const pair = mappingGet(item, key);
+            return pair?.value?.kind === 'scalar' ? scalarPathText(pair.value).trim() : '';
+        };
+        const version = scalarOf('version');
+        const repository = scalarOf('repository');
+        const start = namePair?.value?.start ?? item.start;
+        const end = namePair?.value?.end ?? item.end;
+        const range = offsetRange(text, start, end);
+        const vendored = vendoredDependency(chartsDir, name, version, archives);
+        if (!vendored && !repository) {
+            const diagnostic = new vscode.Diagnostic(range, `Dependency "${name}" declares no repository and is not vendored under charts/ — run helm dependency update`, vscode.DiagnosticSeverity.Error);
+            diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+            diagnostics.push(diagnostic);
+            continue;
+        }
+        if (!vendored) {
+            const diagnostic = new vscode.Diagnostic(range, `Dependency "${name}" is not vendored under charts/ yet — run helm dependency build`, vscode.DiagnosticSeverity.Information);
+            diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+            diagnostics.push(diagnostic);
+            continue;
+        }
+        if (version && vendored.version && vendored.version !== version) {
+            const diagnostic = new vscode.Diagnostic(range, `Dependency "${name}" pins ${version} but the vendored copy has ${vendored.version} — run helm dependency update`, vscode.DiagnosticSeverity.Warning);
+            diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
+/* ---------------- unused define diagnostics ---------------- */
+
+/** Quick-fix payload for unused defines: the whole define block to remove. */
+export const unusedChartDefines = new WeakMap<vscode.Diagnostic, { readonly name: string; readonly start: number; readonly end: number }>();
+
+function isLibraryChart(root: string): boolean {
+    for (const name of ['Chart.yaml', 'Chart.yml']) {
+        const file = path.join(root, name);
+        if (!fs.existsSync(file)) continue;
+        try {
+            const manifest = parseTree(fs.readFileSync(file, 'utf8'));
+            const typePair = rootMappings(manifest).map(root => mappingGet(root, 'type'))[0];
+            return typePair?.value?.kind === 'scalar' && scalarPathText(typePair.value).trim() === 'library';
+        } catch {
+            return false; // unreadable manifest — treat as an application chart
+        }
+    }
+    return false;
+}
+
+/**
+ * `{{ define }}` blocks no include/template call in the chart references.
+ * Library charts publish their defines for other charts, so they are exempt.
+ */
+export function unusedDefineDiagnostics(document: vscode.TextDocument, context: ChartTemplateContext, diagnostics: vscode.Diagnostic[]): void {
+    if (isLibraryChart(context.root)) return;
+    const text = document.getText();
+    const current = { file: document.uri.fsPath, text };
+    const stamp = contentStamp();
+    const used = new Set(chartCallsFor(context, stamp, current).map(call => call.name));
+    const warned = new Set<string>();
+    for (const define of chartDefinesFor(context, stamp, current)) {
+        if (define.file !== document.uri.fsPath || used.has(define.name) || warned.has(define.name)) continue;
+        warned.add(define.name);
+        const header = text.slice(define.start);
+        const literal = header.indexOf(`"${define.name}"`);
+        if (literal < 0) continue;
+        const start = define.start + literal + 1;
+        const diagnostic = new vscode.Diagnostic(offsetRange(text, start, start + define.name.length), `Define "${define.name}" is never used in this chart`, vscode.DiagnosticSeverity.Information);
+        diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
+        unusedChartDefines.set(diagnostic, { name: define.name, start: define.start, end: define.end });
         diagnostics.push(diagnostic);
     }
 }

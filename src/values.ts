@@ -108,7 +108,19 @@ export function readSource(uri: vscode.Uri): SourceFile | null {
 }
 
 export function isHelmfileName(name: string): boolean {
-    return STATE_NAMES.includes(name) || /\.gotmpl$/.test(name) || /^_.*\.tpl$/.test(name);
+    return isStateFileName(name) || /\.gotmpl$/.test(name) || /^_.*\.tpl$/.test(name);
+}
+
+/**
+ * Helmfile merges every `*.yaml` under a `helmfile.d/` directory into one
+ * state; those files are state files regardless of their basename.
+ * `name` may be a bare filename or a full path.
+ */
+export function isStateFileName(name: string): boolean {
+    if (STATE_NAMES.includes(path.basename(name))) return true;
+    const parts = name.split(/[\\/]/);
+    const dirIndex = parts.lastIndexOf('helmfile.d');
+    return dirIndex >= 0 && dirIndex < parts.length - 1 && /\.ya?ml$/i.test(parts[parts.length - 1]);
 }
 
 /* ---------------- state file location ---------------- */
@@ -116,7 +128,7 @@ export function isHelmfileName(name: string): boolean {
 export function stateFor(uri: vscode.Uri): SourceFile | null {
     const self = readSource(uri);
     if (!self) return null;
-    if (STATE_NAMES.includes(path.basename(uri.fsPath)) || hasStateRoot(self.tree)) return self;
+    if (isStateFileName(uri.fsPath) || hasStateRoot(self.tree)) return self;
     let dir = path.dirname(uri.fsPath);
     for (let depth = 0; depth < MAX_WALK_DEPTH; depth++) {
         const parent = path.dirname(dir);
@@ -125,6 +137,19 @@ export function stateFor(uri: vscode.Uri): SourceFile | null {
             const candidate = path.join(dir, name);
             if (fs.existsSync(candidate)) {
                 const state = readSource(vscode.Uri.file(candidate));
+                if (state) return state;
+            }
+        }
+        // Values files under a helmfile.d/ layout resolve against the merged
+        // state; anchor on the first fragment as an approximation.
+        const helmfileD = path.join(dir, 'helmfile.d');
+        if (fs.existsSync(helmfileD) && fs.statSync(helmfileD).isDirectory()) {
+            const fragment = fs.readdirSync(helmfileD, { withFileTypes: true })
+                .filter(entry => entry.isFile() && /\.ya?ml$/i.test(entry.name))
+                .map(entry => entry.name)
+                .sort()[0];
+            if (fragment) {
+                const state = readSource(vscode.Uri.file(path.join(helmfileD, fragment)));
                 if (state) return state;
             }
         }

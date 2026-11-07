@@ -202,8 +202,9 @@ Host),自带 `examples/` 下的示例状态文件。
   补全其 chart 版本,`repository:` 补全 helmfile 状态 `repositories:` 声明的
   URL,`condition:` 补全 `values.yaml` 中的 `<依赖>.enabled` 键。
 - chart 含严格 `values.schema.json`(`additionalProperties: false`)时,引用
-  未声明的 `.Values` 键会产生警告,并提供**在 values.schema.json 中声明**
-  快速修复,自动插入缺失的属性链。
+  未声明的 `.Values` 键会产生警告,并提供两个快速修复:**在
+  values.schema.json 中声明**自动插入缺失的属性链;**添加到 values.yaml**
+  按正确的嵌套层级把键补进 chart 的 `values.yaml`。
 - `.Files.Get "…"` / `.Files.Glob "…"` 补全 chart 根下的文件路径;悬停引号内
   的路径可预览文件内容(`Glob` 则列出匹配文件)。
 - `range` / `with` 块内,相对路径 `.field` 基于被迭代的值补全 —— 遍历对象列表时
@@ -228,6 +229,15 @@ Host),自带 `examples/` 下的示例状态文件。
   `set:` 条目;大纲中显示 `define` 声明符号。
 - 函数调用支持签名帮助(空格分隔参数风格,如 `include "name" `),代码片段
   补全覆盖 `range` / `with` / `if` / `include` / `define` / `block`。
+- chart 内无人调用的 `define` 会得到**未使用 define** 提示(library 类型
+  chart 除外),快速修复可整块删除;**F2 重命名**会把命名模板在其声明与
+  chart 内所有 `include`/`template` 调用处一并改名;重构菜单提供
+  **提取为命名模板**,把选中内容移到文件末尾的新 `{{ define }}`,原处留下
+  `{{ include }}`。
+- `Chart.yaml` 依赖体检:既没有 `repository:` 又没有 `charts/` 下解包副本的
+  条目报错;`version:` 与解包副本版本不一致时报警告。
+- 支持拆分在 `helmfile.d/` 目录中的 helmfile 状态:`helmfile.d/` 下所有
+  `*.yaml`/`*.yml` 分片都会被接管并按状态文件处理。
 
 可通过 `helmfile.chartSupport: false` 关闭 chart 感知能力;YAML/模板语法检查始终
 保留。只包含 chart(无 helmfile 状态)的工作区同样会激活扩展。

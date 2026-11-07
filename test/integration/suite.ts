@@ -300,6 +300,39 @@ async function main(): Promise<void> {
         const varHoverText = (varHovers ?? []).map(h => (h.contents as { value?: string }[]).map(c => c.value ?? '').join(' ')).join(' || ');
         check('iteration variable hover shows collection', varHoverText.includes('element of') && varHoverText.includes('ports'), varHoverText.slice(0, 160));
         void varDoc;
+
+        // helmfile.d/ fragments are state files (language claiming).
+        fs2.mkdirSync(path.join(chartWs, 'helmfile.d'));
+        const fragmentUri = vscode.Uri.file(path.join(chartWs, 'helmfile.d', '00-defaults.yaml'));
+        fs2.writeFileSync(fragmentUri.fsPath, 'releases: []\n');
+        const fragmentDoc = await vscode.workspace.openTextDocument(fragmentUri);
+        check('helmfile.d fragment languageId=helmfile', fragmentDoc.languageId === 'helmfile', `got '${fragmentDoc.languageId}'`);
+        void fragmentDoc;
+
+        // Chart.yaml dependency diagnostics (the appended `side` dep is neither
+        // vendored nor given a repository).
+        await sleep(1200);
+        const manifestDiags = (vscode.languages.getDiagnostics().filter(([uri]) => uri.toString() === chartYamlUri.toString())[0]?.[1] ?? []).filter(d => d.source === 'helmfile');
+        check('Chart.yaml dependency diagnostic', manifestDiags.some(d => d.message.includes('Dependency "side"')), JSON.stringify(manifestDiags.map(d => d.message)));
+
+        // F2 rename of a named template: declaration + usages.
+        const renameEdit = (await vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', chartUri, cdoc.positionAt(includeOffset), 'demo.name.full')) as vscode.WorkspaceEdit | null;
+        const renameEntries = renameEdit?.entries?.() ?? [];
+        check('rename define produces edits', renameEntries.length >= 1 && renameEntries.some(([uri, edits]) => uri.fsPath.endsWith('deployment.yaml') && edits.some(e => e.newText === 'demo.name.full')), JSON.stringify(renameEntries.map(([u, e]) => `${path.basename(u.fsPath)}:${e.length}`)));
+
+        // Extract-to-define code action on a selection.
+        const extractActions = (await vscode.commands.executeCommand('vscode.executeCodeActionProvider', chartUri, new vscode.Range(cdoc.positionAt(includeOffset - 8), cdoc.positionAt(includeOffset + 12)))) as vscode.CodeAction[];
+        check('extract to named template action', (extractActions ?? []).some(a => a.title === 'Extract to named template'), JSON.stringify(extractActions?.map(a => a.title)));
+
+        // Unused define diagnostic in a fresh scratch template.
+        const unusedScratch = path.join(chartWs, 'charts', 'demo', 'templates', `unused-probe-${probeIndex++}.yaml`);
+        fs2.writeFileSync(unusedScratch, '{{- define "demo.lonely" -}}unused{{- end -}}\n');
+        const unusedDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(unusedScratch));
+        await sleep(1200);
+        const unusedDiags = (vscode.languages.getDiagnostics().filter(([uri]) => uri.toString() === unusedDoc.uri.toString())[0]?.[1] ?? []).filter(d => d.source === 'helmfile');
+        check('unused define diagnostic', unusedDiags.some(d => d.message.includes('demo.lonely')), JSON.stringify(unusedDiags.map(d => d.message)));
+        const unusedActions = (await vscode.commands.executeCommand('vscode.executeCodeActionProvider', unusedDoc.uri, new vscode.Range(0, 12, 0, 16))) as vscode.CodeAction[];
+        check('remove unused define quick fix', (unusedActions ?? []).some(a => a.title === 'Remove unused define "demo.lonely"'), JSON.stringify(unusedActions?.map(a => a.title)));
     } finally {
         fs2.rmSync(chartWs, { recursive: true, force: true });
     }

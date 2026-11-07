@@ -9,14 +9,14 @@ import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { TemplateScanner } from '../src/templateScanner';
 import { templateBlocks, unclosedActions } from '../src/inspection';
-import { unknownFieldDiagnostics, missingFileDiagnostics, repositoryDiagnostics, outdatedVersions } from '../src/inspection';
+import { unknownFieldDiagnostics, missingFileDiagnostics, repositoryDiagnostics, outdatedVersions, chartYamlDependencyDiagnostics, isChartManifestName } from '../src/inspection';
 import { envVarSuggestions } from '../src/envVars';
 import { chartValueKeys, chartValuePaths, chartValuesContextFor } from '../src/chartValues';
 import { repositoryService } from '../src/repositoryService';
 import { contextualCompletions } from '../src/contextualCompletion';
 import { fillMaskedTemplateKeys } from '../src/templateScanner';
 import { allFunctions, findFunction } from '../src/functionCatalog';
-import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion } from '../src/values';
+import { readSource, stateFor, valuesModel, allDefinitions, childKeys, resolveValueFiles, SEPARATOR, bumpContentVersion, isStateFileName } from '../src/values';
 import { repositoryModel, query, alias } from '../src/repositories';
 import { ChartIndex, compareVersions } from '../src/chartIndex';
 import { parseTemplateOutput, parseDiffOutput, diffPartial, OutputViewer, disposeOutputProvider } from '../src/outputs';
@@ -340,6 +340,21 @@ entries:
     const state = stateFor(nested);
     check('stateFor walks up from values/', state?.uri.path.endsWith('helmfile.yaml.gotmpl') === true, state?.uri.path);
     eq(stateFor(vscode.Uri.file('/tmp/other.yaml')), null, 'stateFor unrelated file');
+
+    eq(isStateFileName(path.join('ws', 'helmfile.d', '10-ingress.yaml')), true, 'helmfile.d fragment is a state file');
+    eq(isStateFileName(path.join('ws', 'helmfile.d', 'app.yml')), true, 'helmfile.d yml fragment');
+    eq(isStateFileName(path.join('ws', 'helmfile.d', 'README.md')), false, 'helmfile.d non-yaml is not a state file');
+    eq(isStateFileName('helmfile.yaml'), true, 'classic state name');
+
+    const hdRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'helmfile-d-'));
+    fs.mkdirSync(path.join(hdRoot, 'helmfile.d'));
+    fs.writeFileSync(path.join(hdRoot, 'helmfile.d', '00-defaults.yaml'), 'releases:\n  - name: app\n    chart: ./charts/app\n');
+    fs.writeFileSync(path.join(hdRoot, 'helmfile.d', '10-extra.yaml'), 'releases:\n  - name: web\n    chart: ./charts/web\n');
+    fs.mkdirSync(path.join(hdRoot, 'applications', 'values'), { recursive: true });
+    const fragValues = vscode.Uri.file(path.join(hdRoot, 'applications', 'values', 'app.yaml'));
+    fs.writeFileSync(fragValues.fsPath, 'replicas: 2\n');
+    const hdState = stateFor(fragValues);
+    check('stateFor anchors on helmfile.d fragment', hdState?.uri.fsPath.endsWith(path.join('helmfile.d', '00-defaults.yaml')) === true, hdState?.uri.fsPath);
 }
 
 // ---------------------------------------------------------------- dirty-cache invariant
@@ -1376,6 +1391,7 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     ].join('\n');
     const helperFile = path.join(root, 'templates', '_probe_helpers.tpl');
     fs.writeFileSync(helperFile, helperBody);
+    fs.writeFileSync(path.join(root, 'templates', '_probe_use.tpl'), '{{ include "demo.idList" (list "a") }}\n');
     const mockDoc = (file: string, text: string) => ({ uri: vscode.Uri.file(file), getText: () => text, positionAt: () => new vscode.Position(0, 0) }) as never;
     diagnostics.analyze(mockDoc(helperFile, helperBody));
     check('tpl helper body is not YAML-checked', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
@@ -1471,6 +1487,7 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     const dupB = path.join(root, 'templates', '_probe_dup2.tpl');
     fs.writeFileSync(dupA, '{{- define "probe.dup" -}}first{{- end -}}\n');
     fs.writeFileSync(dupB, '{{- define "probe.dup" -}}second{{- end -}}\n');
+    fs.writeFileSync(path.join(root, 'templates', '_probe_use.tpl'), '{{ include "probe.dup" . }}\n');
     captured.length = 0;
     diagnostics.analyze(mockDoc(dupB, fs.readFileSync(dupB, 'utf8')));
     const dupMessages = captured.map(d => (d as { message: string }).message).join('|');
@@ -1753,7 +1770,16 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
         (schemaDiagnostic as { range: never }).range,
         { diagnostics: [schemaDiagnostic] } as never,
     ) as { title: string; edit?: { size: number } }[];
-    check('schema quick fix offered', schemaActions.length === 1 && schemaActions[0].title === 'Declare "image.tg" in values.schema.json' && schemaActions[0].edit?.size === 1, JSON.stringify(schemaActions.map(a => a.title)));
+    check('schema quick fixes offered', schemaActions.length === 3
+        && schemaActions.some(a => a.title === 'Declare "image.tg" in values.schema.json')
+        && schemaActions.some(a => a.title === 'Add "image.tg" to values.yaml')
+        && schemaActions.some(a => a.title === 'Extract to named template'), JSON.stringify(schemaActions.map(a => a.title)));
+    const valuesAction = schemaActions.find(a => a.title === 'Add "image.tg" to values.yaml') as unknown as { edit?: { edits: Array<{ type: string; text: string }> } } | undefined;
+    check('values addition inserts indented leaf', valuesAction?.edit?.edits?.length === 1 && valuesAction.edit.edits[0].type === 'insert' && valuesAction.edit.edits[0].text === '\n  tg: null', JSON.stringify(valuesAction?.edit?.edits));
+    check('values addition walks existing parents', schemaProvider.buildValuesAdditionEdit(['image', 'deep', 'leaf'], path.join(root, 'values.yaml')) != null
+        && schemaProvider.buildValuesAdditionEdit(['image', 'repository'], path.join(root, 'values.yaml')) === null
+        && schemaProvider.buildValuesAdditionEdit(['image', 'tag', 'extra'], path.join(root, 'values.yaml')) === null,
+    'chain walk behavior');
     check('schema addition edit builds for valid JSON', schemaProvider.buildSchemaAdditionEdit(['image', 'extra'], path.join(root, 'values.schema.json'), 'string') != null);
     check('schema addition edit rejects non-JSON file', schemaProvider.buildSchemaAdditionEdit(['a'], path.join(root, 'values.yaml'), 'string') === null);
 
@@ -1763,7 +1789,8 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
         (defineDiagnostic as { range: never }).range,
         { diagnostics: [defineDiagnostic] } as never,
     ) as { title: string; isPreferred?: boolean }[];
-    check('missing define quick fix offered', actions.length === 1 && actions[0].title === 'Create define "mychart.nothere"' && actions[0].isPreferred === true, JSON.stringify(actions.map(a => a.title)));
+    check('missing define quick fix offered', actions.some(a => a.title === 'Create define "mychart.nothere"' && a.isPreferred === true)
+        && actions.some(a => a.title === 'Extract to named template'), JSON.stringify(actions.map(a => a.title)));
 
     const { HelmfileInlayHintsProvider } = require('../src/inlayHints') as typeof import('../src/inlayHints');
     const hintsProvider = new HelmfileInlayHintsProvider(env);
@@ -1853,5 +1880,197 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     check('chartSupport=false still skips state diagnostics', captured.length === 0, JSON.stringify(captured));
     (vscode as unknown as { configOverrides: Record<string, unknown> }).configOverrides.chartSupport = true;
 }
+
+// ---------------------------------------------------------------- Chart.yaml dependency diagnostics
+{
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chartdeps-'));
+    fs.mkdirSync(path.join(root, 'charts'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'charts', 'vendored'));
+    fs.writeFileSync(path.join(root, 'charts', 'vendored', 'Chart.yaml'), 'apiVersion: v2\nname: vendored\nversion: 1.0.0\n');
+    fs.mkdirSync(path.join(root, 'charts', 'stale'));
+    fs.writeFileSync(path.join(root, 'charts', 'stale', 'Chart.yaml'), 'apiVersion: v2\nname: stale\nversion: 1.2.3\n');
+    fs.writeFileSync(path.join(root, 'charts', 'packed-0.1.0.tgz'), 'fake');
+    fs.writeFileSync(path.join(root, 'charts', 'oldpacked-0.2.0.tgz'), 'fake');
+    const manifest = [
+        'apiVersion: v2',
+        'name: host',
+        'dependencies:',
+        '  - name: missing',
+        '  - name: remote',
+        '    repository: https://charts.example.com',
+        '  - name: vendored',
+        '    version: 1.0.0',
+        '  - name: stale',
+        '    version: 2.0.0',
+        '  - name: packed',
+        '    version: 0.1.0',
+        '  - name: oldpacked',
+        '    version: 0.1.0',
+    ].join('\n');
+    const doc = {
+        uri: vscode.Uri.file(path.join(root, 'Chart.yaml')),
+        getText: () => manifest,
+        positionAt: (offset: number) => {
+            const before = manifest.slice(0, offset);
+            const line = (before.match(/\n/g) ?? []).length;
+            return new vscode.Position(line, offset - (before.lastIndexOf('\n') + 1));
+        },
+    } as never;
+    const found: Array<{ message: string; severity: number }> = [];
+    const sink = found as never;
+    chartYamlDependencyDiagnostics(doc, sink);
+    const messages = found.map(d => d.message);
+    check('dep without repository or vendored copy errors', found.some(d => d.message.includes('"missing"') && d.severity === 0), JSON.stringify(messages));
+    check('dep with repository but not vendored is a hint', found.some(d => d.message.includes('"remote"') && d.message.includes('helm dependency build') && d.severity === 2), JSON.stringify(messages));
+    check('matching vendored version stays clean', !messages.some(m => m.includes('"vendored"')), JSON.stringify(messages));
+    check('pinned version mismatch warns', found.some(d => d.message.includes('"stale"') && d.message.includes('2.0.0') && d.message.includes('1.2.3') && d.severity === 1), JSON.stringify(messages));
+    check('archive with exact version stays clean', !messages.some(m => m.includes('"packed"')), JSON.stringify(messages));
+    check('archive version mismatch warns', found.some(d => d.message.includes('"oldpacked"') && d.severity === 1), JSON.stringify(messages));
+
+    const emptyDoc = { uri: vscode.Uri.file(path.join(root, 'Chart.yaml')), getText: () => 'apiVersion: v2\nname: host\n', positionAt: () => new vscode.Position(0, 0) } as never;
+    const none: Array<{ message: string }> = [];
+    chartYamlDependencyDiagnostics(emptyDoc, none as never);
+    check('manifest without dependencies stays clean', none.length === 0, JSON.stringify(none.map(d => d.message)));
+
+    // track() must route Chart.yaml (yaml language) into analysis
+    const { HelmfileDiagnostics } = require('../src/inspection') as typeof import('../src/inspection');
+    const { EnvironmentService } = require('../src/settings') as typeof import('../src/settings');
+    const chartDiagnostics = new HelmfileDiagnostics(new EnvironmentService({ workspaceState: { get: () => 'default', update: async () => undefined } } as never));
+    const routed: vscode.Diagnostic[] = [];
+    (chartDiagnostics as unknown as { collection: { set: (_uri: unknown, list: vscode.Diagnostic[]) => void } }).collection = { set: (_u, list) => { routed.length = 0; routed.push(...list); } };
+    chartDiagnostics.analyze(doc);
+    check('analyze runs dependency diagnostics on Chart.yaml', routed.some(d => (d as { message: string }).message.includes('"missing"')), JSON.stringify(routed.map(d => (d as { message: string }).message)));
+    eq(isChartManifestName('Chart.yaml'), true, 'Chart.yaml manifest name');
+    eq(isChartManifestName('chart.yml'), true, 'Chart.yml manifest name');
+    eq(isChartManifestName('values.yaml'), false, 'values file is not a manifest');
+}
+
+
+// ---------------------------------------------------------------- unused define diagnostics + delete quickfix
+{
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'unused-def-'));
+    fs.mkdirSync(path.join(root, 'templates'));
+    fs.writeFileSync(path.join(root, 'Chart.yaml'), 'apiVersion: v2\nname: demo\n');
+    fs.writeFileSync(path.join(root, 'values.yaml'), 'image:\n  tag: latest\n');
+    const tpl = path.join(root, 'templates', '_helpers.tpl');
+    fs.writeFileSync(tpl, [
+        '{{- define "demo.used" -}}used{{- end -}}',
+        '{{- define "demo.orphan" -}}never{{- end -}}',
+        '{{- define "demo.island" -}}{{ include "demo.orphan2" . }}{{- end -}}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(root, 'templates', 'deployment.yaml'), 'note: {{ include "demo.used" . }}\n');
+    const text = fs.readFileSync(tpl, 'utf8');
+    const doc = { uri: vscode.Uri.file(tpl), getText: () => text, positionAt: () => new vscode.Position(0, 0) } as never;
+    const capturedUnused: Array<{ message: string; range: unknown; severity: number }> = [];
+    const { unusedDefineDiagnostics, unusedChartDefines } = require('../src/inspection') as typeof import('../src/inspection');
+    const { chartTemplateContextFor: contextFor } = require('../src/chartContext') as typeof import('../src/chartContext');
+    let unusedStamp = Date.now();
+    const nextStamp = () => ++unusedStamp;
+    unusedDefineDiagnostics(doc, contextFor(tpl, nextStamp()) ?? {} as never, capturedUnused as never);
+    const messages = capturedUnused.map(d => d.message);
+    check('unused define reported', capturedUnused.some(d => d.message === 'Define "demo.orphan" is never used in this chart'), JSON.stringify(messages));
+    check('define used from deployment stays clean', !messages.some(m => m.includes('"demo.used"')), JSON.stringify(messages));
+    check('dead island (only unused callers) reported', messages.some(m => m.includes('"demo.island"')), JSON.stringify(messages));
+    const orphan = capturedUnused.find(d => d.message.includes('"demo.orphan"'));
+    const payload = orphan ? unusedChartDefines.get(orphan as never) : null;
+    check('unused payload spans the define block', payload != null && text.slice(payload.start).startsWith('{{- define "demo.orphan"') === true && text.slice(0, payload.end).endsWith('{{- end -}}') === true, JSON.stringify(payload));
+
+    // library charts are exempt
+    fs.writeFileSync(path.join(root, 'Chart.yaml'), 'apiVersion: v2\nname: demo\ntype: library\n');
+    const libCaptured: Array<{ message: string }> = [];
+    unusedDefineDiagnostics(doc, contextFor(tpl, nextStamp()) ?? {} as never, libCaptured as never);
+    check('library chart defines exempt', libCaptured.length === 0, JSON.stringify(libCaptured.map(d => d.message)));
+
+    // delete quickfix removes block + trailing newline
+    fs.writeFileSync(path.join(root, 'Chart.yaml'), 'apiVersion: v2\nname: demo\n');
+    const fresh: Array<{ message: string }> = [];
+    unusedDefineDiagnostics(doc, contextFor(tpl, nextStamp()) ?? {} as never, fresh as never);
+    const target = fresh.find(d => d.message.includes('"demo.orphan"')) as never as import('vscode').Diagnostic;
+    const provider = new (require('../src/codeActions') as typeof import('../src/codeActions')).HelmfileCodeActionProvider();
+    const targetRange = (target as unknown as { range: import('vscode').Range }).range;
+    const removeAction = provider.provideCodeActions(doc, targetRange, { diagnostics: [target] } as never, {} as never);
+    check('remove unused define quickfix offered', removeAction.some(a => a.title === 'Remove unused define "demo.orphan"'), JSON.stringify(removeAction.map(a => a.title)));
+}
+
+
+// ---------------------------------------------------------------- rename define (F2)
+{
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rename-def-'));
+    fs.mkdirSync(path.join(root, 'templates'));
+    fs.writeFileSync(path.join(root, 'Chart.yaml'), 'apiVersion: v2\nname: demo\n');
+    fs.writeFileSync(path.join(root, 'values.yaml'), 'name: x\n');
+    const helpers = path.join(root, 'templates', '_helpers.tpl');
+    const helpersText = '{{- define "demo.name" -}}{{ .Chart.Name }}{{- end -}}\n';
+    fs.writeFileSync(helpers, helpersText);
+    const deployment = path.join(root, 'templates', 'deployment.yaml');
+    const deployText = 'name: {{ include "demo.name" . }}\nlabel: {{ include "demo.name" . }}\n';
+    fs.writeFileSync(deployment, deployText);
+    const { HelmfileRenameProvider } = require('../src/references') as typeof import('../src/references');
+    const { EnvironmentService } = require('../src/settings') as typeof import('../src/settings');
+    const provider = new HelmfileRenameProvider();
+    const posIn = (text: string, needle: string) => {
+        const index = text.indexOf(needle) + Math.floor(needle.length / 2);
+        const lines = text.split('\n');
+        let line = 0, seen = 0;
+        for (let i = 0; i < lines.length; i++) { seen += lines[i].length + 1; if (index < seen) { line = i; break; } }
+        return new vscode.Position(line, index - lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0));
+    };
+    const docOf = (file: string, text: string) => ({
+        uri: vscode.Uri.file(file),
+        getText: () => text,
+        offsetAt: (p: { line: number; character: number }) => {
+            const lines = text.split('\n');
+            let offset = 0;
+            for (let i = 0; i < p.line; i++) offset += (lines[i]?.length ?? 0) + 1;
+            return offset + p.character;
+        },
+    }) as never;
+
+    const usageRange = provider.prepareRename(docOf(deployment, deployText), posIn(deployText, '"demo.name"'));
+    check('prepareRename on include literal', usageRange != null, JSON.stringify(usageRange));
+    const declRange = provider.prepareRename(docOf(helpers, helpersText), posIn(helpersText, '"demo.name"'));
+    check('prepareRename on define declaration', declRange != null, JSON.stringify(declRange));
+    const plainRange = provider.prepareRename(docOf(deployment, deployText), posIn(deployText, 'label'));
+    check('prepareRename outside template names is null', plainRange === null, JSON.stringify(plainRange));
+
+    const edit = provider.provideRenameEdits(docOf(deployment, deployText), posIn(deployText, '"demo.name"'), 'demo.full');
+    const entries = (edit as unknown as { edits: Array<{ type: string; text: string; uri: { fsPath: string } }> } | null)?.edits ?? [];
+    check('rename rewrites declaration and both usages', entries.length === 3 && entries.every(e => e.type === 'replace' && e.text === 'demo.full'), JSON.stringify(entries.map(e => `${path.basename(e.uri.fsPath)}:${e.text}`)));
+    check('rename edits span helpers + deployment', new Set(entries.map(e => path.basename(e.uri.fsPath))).size === 2, JSON.stringify(entries.map(e => path.basename(e.uri.fsPath))));
+    check('rename rejects quote in name', provider.provideRenameEdits(docOf(deployment, deployText), posIn(deployText, '"demo.name"'), 'bad"name') === null, 'quote rejected');
+    check('rename rejects empty name', provider.provideRenameEdits(docOf(deployment, deployText), posIn(deployText, '"demo.name"'), '   ') === null, 'empty rejected');
+}
+
+
+// ---------------------------------------------------------------- extract to define
+{
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'extract-def-'));
+    fs.mkdirSync(path.join(root, 'templates'));
+    fs.writeFileSync(path.join(root, 'Chart.yaml'), 'apiVersion: v2\nname: demo\n');
+    fs.writeFileSync(path.join(root, 'values.yaml'), 'tag: latest\n');
+    const deployment = path.join(root, 'templates', 'deployment.yaml');
+    const text = 'image: nginx:{{ .Values.tag }}\n';
+    fs.writeFileSync(deployment, text);
+    const { HelmfileCodeActionProvider, buildExtractEdit } = require('../src/codeActions') as typeof import('../src/codeActions');
+    const doc = {
+        uri: vscode.Uri.file(deployment),
+        getText: () => text,
+        offsetAt: (p: { line: number; character: number }) => p.line === 0 ? p.character : text.length,
+        positionAt: (o: number) => new vscode.Position(0, o),
+    } as never;
+    const provider = new HelmfileCodeActionProvider();
+    const selected = provider.provideCodeActions(doc, new vscode.Range(0, 13, 0, 31), { diagnostics: [] } as never) as { title: string; kind?: { value: string } }[];
+    check('extract action offered on selection', selected.some(a => a.title === 'Extract to named template'), JSON.stringify(selected.map(a => a.title)));
+    const none = provider.provideCodeActions(doc, new vscode.Range(0, 5, 0, 5), { diagnostics: [] } as never) as { title: string }[];
+    check('extract action needs non-empty selection', !none.some(a => a.title === 'Extract to named template'), JSON.stringify(none.map(a => a.title)));
+
+    const edit = buildExtractEdit(text, { start: 13, end: 30 }, 'demo.image', vscode.Uri.file(deployment)) as unknown as { edits: Array<{ type: string; text: string }> } | null;
+    check('extract edit replaces selection and appends define', edit != null && edit.edits.length === 2
+        && edit.edits.some(e => e.type === 'replace' && e.text === '{{ include "demo.image" . }}')
+        && edit.edits.some(e => e.type === 'insert' && e.text === '{{- define "demo.image" -}}\n{{ .Values.tag }}\n{{- end -}}\n'),
+    JSON.stringify(edit?.edits));
+    eq(buildExtractEdit('   ', { start: 0, end: 3 }, 'x', vscode.Uri.file(deployment)), null, 'extract rejects whitespace-only selection');
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);

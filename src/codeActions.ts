@@ -12,7 +12,11 @@
  */
 import * as vscode from 'vscode';
 import * as fs from 'node:fs';
-import { HELMFILE_DIAGNOSTIC_SOURCE, missingChartDefines, missingFiles, outdatedVersions, schemaUnknownKeys, unknownFields } from './inspection';
+import { HELMFILE_DIAGNOSTIC_SOURCE, missingChartDefines, missingFiles, outdatedVersions, schemaUnknownKeys, unknownFields, unusedChartDefines } from './inspection';;
+import { offsetRange } from './position';
+import { mappingGet, parseTree, rootMappings, type YMapping, type YPair } from './yamlTree';
+import { chartFileOf, chartTemplateContextFor } from './chartContext';
+import { contentStamp } from './values';
 
 export class HelmfileCodeActionProvider implements vscode.CodeActionProvider {
     provideCodeActions(document: vscode.TextDocument, range: vscode.Range, context: vscode.CodeActionContext): vscode.CodeAction[] {
@@ -81,8 +85,27 @@ export class HelmfileCodeActionProvider implements vscode.CodeActionProvider {
                         action.command = { command: 'vscode.open', title: 'Open schema', arguments: [vscode.Uri.file(unknown.schemaFile)] };
                         actions.push(action);
                     }
+                    const valuesEdit = buildValuesAdditionEdit(unknown.segments, unknown.valuesFile);
+                    if (valuesEdit) {
+                        const action = new vscode.CodeAction(`Add "${unknown.segments.join('.')}" to values.yaml`, vscode.CodeActionKind.QuickFix);
+                        action.edit = valuesEdit;
+                        action.command = { command: 'vscode.open', title: 'Open values.yaml', arguments: [vscode.Uri.file(unknown.valuesFile)] };
+                        actions.push(action);
+                    }
+                }
+                const unused = unusedChartDefines.get(diagnostic);
+                if (unused) {
+                    const action = new vscode.CodeAction(`Remove unused define "${unused.name}"`, vscode.CodeActionKind.QuickFix);
+                    action.edit = removeDefineEdit(document, unused.start, unused.end);
+                    actions.push(action);
                 }
             }
+        }
+        // Extract-to-define on any non-empty selection inside a chart template.
+        if (!range.isEmpty && chartTemplateContextFor(chartFileOf(document.uri), contentStamp())) {
+            const action = new vscode.CodeAction('Extract to named template', vscode.CodeActionKind.RefactorExtract);
+            action.command = { command: 'helmfile.extractDefine', title: 'Extract to named template', arguments: [document.uri, range] };
+            actions.push(action);
         }
         if (ours.some(diagnostic => diagnostic.code === 'helmfile.refreshRepositories')) {
             const action = new vscode.CodeAction('Refresh Helm chart repositories', vscode.CodeActionKind.QuickFix);
@@ -151,5 +174,74 @@ function createDefineEdit(name: string, helpers: string): vscode.WorkspaceEdit {
         edit.createFile(uri, { overwrite: false, ignoreIfExists: true });
         edit.insert(uri, new vscode.Position(0, 0), `{{- define "${name}" -}}\n\n{{- end -}}\n`);
     }
+    return edit;
+}
+
+/** Delete the whole `{{ define }}…{{ end }}` block, its indentation and trailing newline. */
+function removeDefineEdit(document: vscode.TextDocument, start: number, end: number): vscode.WorkspaceEdit {
+    const text = document.getText();
+    let blockStart = start;
+    while (blockStart > 0 && (text[blockStart - 1] === ' ' || text[blockStart - 1] === '\t')) blockStart--;
+    let blockEnd = end;
+    if (text.slice(blockEnd).startsWith('\n')) blockEnd++;
+    const edit = new vscode.WorkspaceEdit();
+    edit.delete(document.uri, offsetRange(text, blockStart, blockEnd));
+    return edit;
+}
+
+/**
+ * Insert a missing `.Values` key chain into the chart's values.yaml.
+ * Walks the existing nested mappings as deep as they match, then appends
+ * the missing tail (leaf as `null` placeholder) at the right indentation.
+ */
+export function buildValuesAdditionEdit(segments: readonly string[], valuesFile: string): vscode.WorkspaceEdit | null {
+    let text = '';
+    try {
+        text = fs.readFileSync(valuesFile, 'utf8');
+    } catch {
+        return null;
+    }
+    const columnOf = (offset: number): number => offset - (text.slice(0, offset).lastIndexOf('\n') + 1);
+    const roots = rootMappings(parseTree(text));
+    let parent: YMapping | null = roots[0] ?? null;
+    let parentColumn = -2; // root children sit at column 0
+    let index = 0;
+    while (parent && index < segments.length) {
+        const pair: YPair | null = mappingGet(parent, segments[index]);
+        if (!pair) break; // missing from here on
+        if (index === segments.length - 1) return null; // the full chain already exists
+        if (pair.value?.kind !== 'mapping') return null; // intermediate holds a scalar — bail out
+        parent = pair.value;
+        parentColumn = columnOf(pair.keyStart);
+        index++;
+    }
+    const chain: string[] = [];
+    for (let i = index; i < segments.length; i++) {
+        const indent = ' '.repeat(parentColumn + 2 + 2 * (i - index));
+        chain.push(`${indent}${segments[i]}:${i === segments.length - 1 ? ' null' : ''}`);
+    }
+    if (chain.length === 0) return null;
+    const edit = new vscode.WorkspaceEdit();
+    if (!parent) {
+        // Empty (or non-mapping) values.yaml: start the file.
+        edit.insert(vscode.Uri.file(valuesFile), new vscode.Position(0, 0), `${chain.join('\n')}\n`);
+        return edit;
+    }
+    const anchor = parent.pairs.length > 0 ? parent.pairs[parent.pairs.length - 1].end : parent.end;
+    edit.insert(vscode.Uri.file(valuesFile), offsetRange(text, anchor, anchor).end, `\n${chain.join('\n')}`);
+    return edit;
+}
+
+/**
+ * Replace `selection` with `{{ include "name" . }}` and append the selected
+ * text as a `{{ define }}` block at the end of the file.
+ */
+export function buildExtractEdit(text: string, selection: { start: number; end: number }, name: string, uri: vscode.Uri): vscode.WorkspaceEdit | null {
+    const selected = text.slice(selection.start, selection.end);
+    if (selected.trim().length === 0) return null;
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, offsetRange(text, selection.start, selection.end), `{{ include "${name}" . }}`);
+    const tail = text.length === 0 || text.endsWith('\n') ? '' : '\n';
+    edit.insert(uri, offsetRange(text, text.length, text.length).end, `${tail}{{- define "${name}" -}}\n${selected}\n{{- end -}}\n`);
     return edit;
 }
