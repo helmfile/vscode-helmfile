@@ -438,7 +438,7 @@ export function chartTemplateReferences(currentFile: string, text: string, offse
     const stamp = contentStamp();
     const current = { file: currentFile, text };
     const target = templateCallAt(text, offset)?.name
-        ?? declarationNameAt(chartDefinesFor(context, stamp, current), currentFile, text, offset);
+        ?? declarationNameAt(chartDefinesFor(context, stamp, current), currentFile, text, offset)?.name;
     if (!target) return [];
     const locations: vscode.Location[] = [];
     for (const define of chartDefinesFor(context, stamp, current)) {
@@ -465,8 +465,8 @@ function locationAt(file: string, offset: number): vscode.Location | null {
     return new vscode.Location(vscode.Uri.file(file), new vscode.Position(line, character));
 }
 
-/** Name of the `define` whose quoted name literal contains `offset`, if any. */
-function declarationNameAt(defines: readonly { name: string; file: string; start: number }[], currentFile: string, text: string, offset: number): string | null {
+/** Name and literal span of the `define` whose quoted name contains `offset`, if any. */
+function declarationNameAt(defines: readonly { name: string; file: string; start: number }[], currentFile: string, text: string, offset: number): { name: string; start: number; end: number } | null {
     for (const define of defines) {
         if (define.file !== currentFile) continue;
         if (offset < define.start || offset > define.start + 200) continue;
@@ -474,7 +474,70 @@ function declarationNameAt(defines: readonly { name: string; file: string; start
         if (!match) continue;
         const start = define.start + (match.index ?? 0) + 1;
         const end = start + match[1].length;
-        if (offset >= start - 1 && offset <= end + 1) return define.name;
+        if (offset >= start - 1 && offset <= end + 1) return { name: define.name, start, end };
     }
     return null;
+}
+
+/** Literal span of `name` inside a `{{ define "name" }}` header, without the quotes. */
+function defineLiteralSpan(define: { name: string; file: string; start: number }, text: string): { start: number; end: number } | null {
+    const header = text.slice(define.start, define.start + 200);
+    const match = /"((?:[^"\\]|\\.)*)"/.exec(header);
+    if (!match || match[1] !== define.name) return null;
+    const start = define.start + (match.index ?? 0) + 1;
+    return { start, end: start + define.name.length };
+}
+
+/** Rename a named template: the `{{ define }}` declaration plus every include/template call. */
+export class HelmfileRenameProvider implements vscode.RenameProvider {
+    prepareRename(document: vscode.TextDocument, position: vscode.Position): vscode.Range | null {
+        const uri = document.uri;
+        const context = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        if (!context) return null;
+        const text = document.getText();
+        const offset = document.offsetAt(position);
+        const call = templateCallAt(text, offset);
+        if (call) return offsetRange(text, call.start, call.end);
+        const current = { file: uri.fsPath, text };
+        const declaration = declarationNameAt(chartDefinesFor(context, contentStamp(), current), uri.fsPath, text, offset);
+        return declaration ? offsetRange(text, declaration.start, declaration.end) : null;
+    }
+
+    provideRenameEdits(document: vscode.TextDocument, position: vscode.Position, newName: string): vscode.WorkspaceEdit | null {
+        const name = newName.trim();
+        if (name.length === 0 || name.length > 200 || /["'\\\r\n]/.test(name)) return null;
+        const uri = document.uri;
+        const context = chartTemplateContextFor(chartFileOf(uri), contentStamp());
+        if (!context) return null;
+        const text = document.getText();
+        const offset = document.offsetAt(position);
+        const stamp = contentStamp();
+        const current = { file: uri.fsPath, text };
+        const target = templateCallAt(text, offset)?.name
+            ?? declarationNameAt(chartDefinesFor(context, stamp, current), uri.fsPath, text, offset)?.name;
+        if (!target) return null;
+        const textOf = (file: string): string | undefined => readSource(vscode.Uri.file(file))?.text;
+        const rangeAt = (file: string, start: number, end: number): vscode.Range | null => {
+            const body = textOf(file);
+            if (body === undefined) return null;
+            return offsetRange(body, start, end);
+        };
+        const edit = new vscode.WorkspaceEdit();
+        let touched = 0;
+        for (const define of chartDefinesFor(context, stamp, current)) {
+            if (define.name !== target) continue;
+            const body = textOf(define.file);
+            if (body === undefined) continue;
+            const span = defineLiteralSpan(define, body);
+            if (!span) continue;
+            const range = rangeAt(define.file, span.start, span.end);
+            if (range) { edit.replace(vscode.Uri.file(define.file), range, name); touched++; }
+        }
+        for (const call of chartCallsFor(context, stamp, current)) {
+            if (call.name !== target) continue;
+            const range = rangeAt(call.file, call.start, call.end);
+            if (range) { edit.replace(vscode.Uri.file(call.file), range, name); touched++; }
+        }
+        return touched > 0 ? edit : null;
+    }
 }

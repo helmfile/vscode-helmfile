@@ -18,6 +18,9 @@ class Range {
             this.end = endOrCharacter as Position;
         }
     }
+    get isEmpty(): boolean {
+        return this.start.line === this.end.line && this.start.character === this.end.character;
+    }
     isEqual(other: Range): boolean {
         return this.start.line === other.start.line && this.start.character === other.start.character
             && this.end.line === other.end.line && this.end.character === other.end.character;
@@ -183,7 +186,7 @@ class WorkspaceEdit {
     private readonly edits: unknown[] = [];
     delete(_uri: unknown, _range: unknown): void { this.edits.push({ type: 'delete' }); }
     insert(_uri: unknown, _position: unknown, _text: string): void { this.edits.push({ type: 'insert', text: _text }); }
-    replace(_uri: unknown, _range: unknown, _text: string): void { this.edits.push({ type: 'replace', text: _text }); }
+    replace(_uri: unknown, _range: unknown, _text: string): void { this.edits.push({ type: 'replace', uri: _uri, range: _range, text: _text }); }
     createFile(_uri: unknown, _options?: unknown): void { this.edits.push({ type: 'createFile' }); }
     get size(): number { return this.edits.length; }
 }
@@ -305,6 +308,7 @@ export = {
         registerSignatureHelpProvider: () => ({ dispose: () => {} }),
         registerInlayHintsProvider: () => ({ dispose: () => {} }),
         registerCodeActionsProvider: () => ({ dispose: () => {} }),
+        registerRenameProvider: () => ({ dispose: () => {} }),
         registerCodeLensProvider: () => ({ dispose: () => {} }),
         registerDocumentSemanticTokensProvider: () => ({ dispose: () => {} }),
         registerDocumentSymbolProvider: () => ({ dispose: () => {} }),

@@ -7,7 +7,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { STATE_NAMES } from './values';
+import { isStateFileName } from './values';
 import { parseTree, mappingGet, scalarPathText, type YNode, type YTree } from './yamlTree';
 import { chartSupportEnabled } from './settings';
 
@@ -39,7 +39,7 @@ function underTemplates(file: string, root: string): boolean {
  * sit inside a chart's templates/ directory.
  */
 function templateRootOf(file: string): string | null {
-    if (STATE_NAMES.includes(path.basename(file))) return null;
+    if (isStateFileName(file)) return null;
     const root = chartRootOf(file);
     return root !== null && underTemplates(file, root) ? root : null;
 }

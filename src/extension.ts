@@ -6,7 +6,7 @@ import { EnvironmentService } from './settings';
 import { bumpContentVersion, closeOpenDocument, isHelmfileName, readSource, setOpenDocument, stateFor } from './values';
 import { HelmfileCompletionProvider } from './completion';
 import { CHART_YAML_SELECTOR, ChartYamlCompletionProvider } from './chartYaml';
-import { HelmfileDefinitionProvider, HelmfileReferencesProvider } from './references';
+import { HelmfileDefinitionProvider, HelmfileReferencesProvider, HelmfileRenameProvider } from './references';
 import { HelmfileHoverProvider } from './hover';
 import { HelmfileSignatureHelpProvider } from './signatureHelp';
 import { HelmfileInlayHintsProvider } from './inlayHints';
@@ -16,7 +16,7 @@ import { HelmfileSemanticTokensProvider, SEMANTIC_TOKEN_TYPES } from './semantic
 import { HelmfileDocumentSymbolProvider } from './documentSymbol';
 import { HelmfileFoldingRangeProvider } from './folding';
 import { HelmfileSelectionRangeProvider } from './selectionRanges';
-import { HelmfileCodeActionProvider } from './codeActions';
+import { HelmfileCodeActionProvider, buildExtractEdit } from './codeActions';
 import { HelmfileStatusBar } from './statusBar';
 import { ChartSourceService } from './chartNavigation';
 import { repositoryService, type RepositoryQuery } from './repositoryService';
@@ -69,6 +69,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.languages.registerCompletionItemProvider(CHART_YAML_SELECTOR, new ChartYamlCompletionProvider()),
         vscode.languages.registerDefinitionProvider(HELMFILE_SELECTOR, definition),
         vscode.languages.registerReferenceProvider(HELMFILE_SELECTOR, references),
+        vscode.languages.registerRenameProvider(HELMFILE_SELECTOR, new HelmfileRenameProvider()),
         vscode.languages.registerHoverProvider(HELMFILE_SELECTOR, hover),
         vscode.languages.registerSignatureHelpProvider(HELMFILE_SELECTOR, new HelmfileSignatureHelpProvider(), ' ', '(', ','),
         vscode.languages.registerInlayHintsProvider(HELMFILE_SELECTOR, new HelmfileInlayHintsProvider(env)),
@@ -85,8 +86,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Document lifecycle: track open helmfile documents for values resolution + diagnostics.
     const track = (document: vscode.TextDocument): void => {
-        if (!isHelmfileDocument(document)) return;
-        setOpenDocument(document.uri, document.version, document.getText(), document.version > 1);
+        if (isHelmfileDocument(document)) {
+            setOpenDocument(document.uri, document.version, document.getText(), document.version > 1);
+        }
+        // Chart.yaml documents carry no state; HelmfileDiagnostics still
+        // checks their dependencies.
         diagnostics.track(document);
     };
     context.subscriptions.push(
@@ -147,6 +151,25 @@ export function activate(context: vscode.ExtensionContext): void {
 
     register(HELMFILE_SELECT_ENVIRONMENT, (uri?: vscode.Uri) => selectEnvironment(env, uri));
     register(HELMFILE_RENDER_CHART_TEMPLATE, (uri?: vscode.Uri) => renderChartTemplate(uri ?? vscode.window.activeTextEditor?.document.uri as vscode.Uri));
+    register('helmfile.extractDefine', async (uri?: vscode.Uri, range?: vscode.Range) => {
+        const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+        const selection = range ?? vscode.window.activeTextEditor?.selection;
+        if (!target || !selection || selection.isEmpty) return;
+        const document = await vscode.workspace.openTextDocument(target);
+        const name = (await vscode.window.showInputBox({
+            prompt: 'Named template name',
+            placeHolder: 'mychart.snippet',
+            validateInput: (value: string) => {
+                const trimmed = value.trim();
+                if (trimmed.length === 0) return 'A name is required';
+                if (/["'\\\r\n]/.test(trimmed)) return 'Quotes and backslashes are not allowed';
+                return null;
+            },
+        }))?.trim();
+        if (!name) return;
+        const edit = buildExtractEdit(document.getText(), { start: document.offsetAt(selection.start), end: document.offsetAt(selection.end) }, name, target);
+        if (edit) await vscode.workspace.applyEdit(edit);
+    });
     register('helmfile.selectEnvironmentQuick', () => selectEnvironment(env, vscode.window.activeTextEditor?.document.uri));
     register('helmfile.refreshRepositories', async () => {
         const target = vscode.window.activeTextEditor?.document.uri ?? activeStateUri();

@@ -246,8 +246,10 @@ chart-aware assistance inside `<chart>/templates/` files
   and `condition:` the `<dependency>.enabled` keys from `values.yaml`.
 - When the chart ships a strict `values.schema.json`
   (`additionalProperties: false`), referencing an undeclared `.Values`
-  key produces a warning with a **Declare in values.schema.json** quick
-  fix that inserts the missing property chain.
+  key produces a warning with two quick fixes: **Declare in
+  values.schema.json** inserts the missing property chain, and
+  **Add to values.yaml** appends the key to the chart's `values.yaml`
+  at the right nesting level.
 - `.Files.Get "…"` / `.Files.Glob "…"` complete file paths under the
   chart root, and hovering the quoted path previews the file's content
   (or, for `Glob`, the list of matching files).
@@ -286,6 +288,20 @@ chart-aware assistance inside `<chart>/templates/` files
 - Signature help shows catalog function parameters while typing
   space-separated calls (`include "name" `), and snippet completions
   cover `range` / `with` / `if` / `include` / `define` / `block`.
+- A `define` that nothing in the chart calls gets an **unused define**
+  hint (library-type charts are exempt) with a quick fix that removes
+  the whole block; **F2 rename** renames a named template across its
+  declaration and every `include`/`template` call in the chart; and the
+  refactoring menu offers **Extract to named template**, which moves the
+  selection into a new `{{ define }}` at the end of the file and leaves
+  an `{{ include }}` behind.
+- `Chart.yaml` dependencies are checked: an entry with neither a
+  `repository:` nor a vendored copy under `charts/` is an error, and a
+  pinned `version:` that differs from the vendored copy is a warning.
+- Helmfile state split across a `helmfile.d/` directory is supported:
+  every `*.yaml`/`*.yml` fragment directly inside `helmfile.d/` is claimed
+  and treated as a state file, and `helmfile.d/` takes precedence over a
+  sibling `helmfile.yaml` — matching helmfile's own lookup.
 
 Chart assistance can be switched off with `helmfile.chartSupport: false`;
 YAML/template syntax checking stays on. Opening a workspace that only
