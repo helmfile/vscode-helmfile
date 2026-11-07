@@ -59,4 +59,4 @@ jobs:
       # marketplace publish — no PAT stored anywhere. --skip-duplicate keeps
       # re-published releases from failing the job.
       - name: Publish to Visual Studio Marketplace
-        run: npx @vsce/vsce@latest publish --packagePath "vscode-helmfile-${VERSION}.vsix" --skip-duplicate --oidc
+        run: npx @vscode/vsce@latest publish --packagePath "vscode-helmfile-${VERSION}.vsix" --skip-duplicate --oidc
