@@ -89,7 +89,8 @@ export class TemplateScanner {
         let quote = '';
         let comment = false;
         let i = 0;
-        for (const action of actions) {
+        for (let a = 0; a < actions.length; a++) {
+            const action = actions[a];
             for (; i < action.start; i++) {
                 const c = text[i];
                 // Brackets inside quoted scalars and comments do not open
@@ -107,6 +108,17 @@ export class TemplateScanner {
             const fill = depth > 0 ? 'x' : ' ';
             for (let j = action.start; j < action.end; j++) {
                 if (result[j] !== '\n' && result[j] !== '\r') result[j] = fill;
+            }
+            // Glue colons between two actions — `image: {{ .repo }}:{{ .tag }}` —
+            // read as `key: :` once both actions blank out, which the YAML
+            // parser rejects ("nested mappings are not allowed in compact
+            // mapping"). The colon is template glue, not structure: fill it.
+            if (depth === 0) {
+                const next = actions[a + 1];
+                const gap = next ? text.slice(action.end, next.start) : '';
+                if (next && !gap.includes('\n') && /^\s*:\s*$/.test(gap)) {
+                    result[action.end + gap.indexOf(':')] = 'x';
+                }
             }
             i = Math.max(i, action.end - 1);
         }

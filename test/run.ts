@@ -1426,6 +1426,26 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     diagnostics.analyze(offsetDoc(flowFile, 'image:\n  repository: a\n  tag: {{ .Values.tag }}\n'));
     check('distinct keys stay clean', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
 
+    // Glue colons between actions: `image: {{ .repo }}:{{ .tag }}` must not
+    // read as `key: :` once masked.
+    captured.length = 0;
+    diagnostics.analyze(offsetDoc(flowFile, 'image: {{ .Values.repo }}:{{ .Values.tag }}\nname: "{{ .Values.repo }}:{{ .Values.tag }}"\n'));
+    check('glue colon between actions stays clean', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
+    // The same key in two different conditional branches never coexists.
+    captured.length = 0;
+    diagnostics.analyze(offsetDoc(flowFile, [
+        '{{- if .Values.preStop }}',
+        'lifecycle:',
+        '  preStop: exec',
+        '{{- end }}',
+        '{{- with .Values.lifecycle }}',
+        'lifecycle:',
+        '  preStop: httpGet',
+        '{{- end }}',
+    ].join('\n')));
+    check('duplicate key across branches not flagged', captured.length === 0, JSON.stringify(captured.map(d => (d as { message: string }).message)));
+
     // $variable scoping: undefined uses and assignments to undeclared names.
     captured.length = 0;
     diagnostics.analyze(mockDoc(helperFile, '{{ if $missing }}x{{ end }}\n'));
