@@ -2,13 +2,16 @@ name: Release
 
 # Manually create (publish) a GitHub Release tagged v<version> — e.g. v0.2.0,
 # matching package.json — and this workflow builds the VSIX from exactly that
-# tag and attaches it (plus a SHA-256 checksum) to the release.
+# tag, attaches it (plus a SHA-256 checksum) to the release, and publishes it
+# to the Visual Studio Marketplace via trusted publishing (OIDC, no PAT —
+# configured on the marketplace for helmfile/vscode-helmfile + release.yml).
 on:
   release:
     types: [published]
 
 permissions:
   contents: write
+  id-token: write   # marketplace trusted publishing (OIDC)
 
 jobs:
   vsix:
@@ -51,3 +54,9 @@ jobs:
             "vscode-helmfile-${VERSION}.vsix" \
             "vscode-helmfile-${VERSION}.vsix.sha256" \
             --clobber
+
+      # Trusted publishing: vsce >= 3.6 exchanges the GitHub OIDC token for a
+      # marketplace publish — no PAT stored anywhere. --skip-duplicate keeps
+      # re-published releases from failing the job.
+      - name: Publish to Visual Studio Marketplace
+        run: npx @vscode/vsce@latest publish --packagePath "vscode-helmfile-${VERSION}.vsix" --skip-duplicate
