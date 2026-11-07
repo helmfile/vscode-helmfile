@@ -84,7 +84,7 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
         if (repository) return repository;
 
         const contextual = contextualCompletions(source, offset, this.env());
-        if (contextual) return contextual;
+        if (contextual) return toCompletionList(contextual, text);
 
         return this.fieldCompletions(source, offset);
     }
@@ -107,9 +107,8 @@ export class HelmfileCompletionProvider implements vscode.CompletionItemProvider
 
         if (field === 'chart') {
             if (value.startsWith('.')) {
-                const list = localChartCompletions(source, value);
-                for (const item of list.items) item.range = replace;
-                return list;
+                const span = { start: offset - value.length, end: offset };
+                return toCompletionList(localChartCompletions(source, value, span), source.text);
             }
             return this.chartCompletions(source.uri, env, value, replace);
         }

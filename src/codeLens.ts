@@ -1,29 +1,23 @@
 /**
- * Code lenses replacing the IntelliJ line markers: an environment switcher on
- * each `environments:` entry (check mark on the active one), run actions on
- * each release name, and template inheritance navigation arrows.
+ * Code lens provider: converts the neutral lens computations into VSCode
+ * lenses (the IntelliJ line markers equivalent).
  */
 import * as vscode from 'vscode';
-import { mappingGet, parseTree, walkAll, type YPair } from './yamlTree';
-import { inferEnvironments } from './environmentInference';
-import type { SourceFile } from './values';
-import { isDeclaration as isTemplateDeclaration, inheritanceScalars } from './templates';
-import { isRelease } from './releaseTarget';
-import { EnvironmentService, mutatingCommandsEnabled } from './settings';
 import { chartFileOf, chartTemplateContextFor } from './chartContext';
-import { contentStamp } from './values';
+import {
+    chartRenderLens,
+    computeStateLenses,
+    HELMFILE_FIND_TEMPLATE_USAGES,
+    HELMFILE_GOTO_TEMPLATE_PARENT,
+    HELMFILE_RENDER_CHART_TEMPLATE,
+    HELMFILE_SELECT_ENVIRONMENT,
+    type LensComputation,
+} from './lensEngine';
 
-export const HELMFILE_SELECT_ENVIRONMENT = 'helmfile.selectEnvironment';
-export const HELMFILE_GOTO_TEMPLATE_PARENT = 'helmfile.gotoTemplateParent';
-export const HELMFILE_FIND_TEMPLATE_USAGES = 'helmfile.findTemplateUsages';
-export const HELMFILE_RENDER_CHART_TEMPLATE = 'helmfile.renderChartTemplate';
-
-const RELEASE_OPERATIONS: readonly { command: string; icon: string; label: string }[] = [
-    { command: 'helmfile.templateRelease', icon: 'preview', label: 'Template' },
-    { command: 'helmfile.diffRelease', icon: 'diff', label: 'Diff' },
-    { command: 'helmfile.applyRelease', icon: 'cloud-upload', label: 'Apply' },
-    { command: 'helmfile.destroyRelease', icon: 'trash', label: 'Destroy' },
-];
+export { HELMFILE_FIND_TEMPLATE_USAGES, HELMFILE_GOTO_TEMPLATE_PARENT, HELMFILE_RENDER_CHART_TEMPLATE, HELMFILE_SELECT_ENVIRONMENT };
+import { mutatingCommandsEnabled, type EnvironmentService } from './settings';
+import { contentStamp, type SourceFile } from './values';
+import { parseTree } from './yamlTree';
 
 export class HelmfileCodeLensProvider implements vscode.CodeLensProvider {
     private readonly emitter = new vscode.EventEmitter<void>();
@@ -37,125 +31,22 @@ export class HelmfileCodeLensProvider implements vscode.CodeLensProvider {
 
     provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
         const chartTemplate = chartTemplateContextFor(chartFileOf(document.uri), contentStamp());
+        const toLens = (lens: LensComputation): vscode.CodeLens => {
+            const range = new vscode.Range(document.positionAt(lens.start), document.positionAt(lens.end));
+            const command: vscode.Command = {
+                title: lens.title,
+                command: lens.command,
+                arguments: [document.uri, ...lens.args],
+                tooltip: lens.tooltip,
+            };
+            return new vscode.CodeLens(range, command);
+        };
         if (chartTemplate) {
             // Chart template files: a single render action instead of state lenses.
-            const title = `$(play) Render Chart Template (helm template ${chartTemplate.name})`;
-            const command = {
-                title,
-                command: HELMFILE_RENDER_CHART_TEMPLATE,
-                arguments: [document.uri],
-                tooltip: 'Run helm template on this chart and show the rendered manifests',
-            };
-            return [new vscode.CodeLens(document.lineAt(0).range, command)];
+            return [toLens(chartRenderLens(chartTemplate.name))];
         }
         const text = document.getText();
-        const tree = parseTree(text);
-        const source: SourceFile = { uri: document.uri, text, tree };
-        const lenses: vscode.CodeLens[] = [];
-
-        for (const doc of tree.docs) {
-            const root = doc.root;
-            if (!root) continue;
-
-            // Environment switcher entries.
-            const environments = mappingGet(root, 'environments');
-            const envMapping = environments?.value;
-            const literalEnvs = envMapping?.kind === 'mapping' ? envMapping.pairs.filter(pair => pair.key).length : 0;
-            if (envMapping && envMapping.kind === 'mapping') {
-                for (const pair of envMapping.pairs) {
-                    if (!pair.key) continue;
-                    const active = pair.key === this.env.get();
-                    lenses.push(
-                        new vscode.CodeLens(lensRange(document, pair.keyStart, pair.keyEnd), {
-                            title: active ? `✓ ${pair.key}` : pair.key,
-                            command: HELMFILE_SELECT_ENVIRONMENT,
-                            arguments: [document.uri],
-                            tooltip: 'Select the Helmfile environment',
-                        }),
-                    );
-                }
-            }
-            // Template-generated environments: no literal keys survive the raw
-            // parse, so show the statically inferred names on `environments:`.
-            if (environments && literalEnvs === 0) {
-                const inferred = inferEnvironments(source, this.env.get());
-                if (inferred.length) {
-                    const active = this.env.get();
-                    const names = inferred.map(env => (env.name === active ? `✓ ${env.name}` : env.name));
-                    const title = names.length > 5 ? names.slice(0, 5).concat(['…']).join(', ') : names.join(', ');
-                    lenses.push(
-                        new vscode.CodeLens(lensRange(document, environments.keyStart, environments.keyEnd), {
-                            title: `${title} (inferred)`,
-                            command: HELMFILE_SELECT_ENVIRONMENT,
-                            arguments: [document.uri],
-                            tooltip: `Environment names are generated by templates; inferred statically from ${inferred[0].origin}. Click to switch.`,
-                        }),
-                    );
-                }
-            }
-
-            // Release run actions.
-            walkAll(root, node => {
-                if (node.kind !== 'pair') return;
-                const pair = node as YPair;
-                if (!isRelease(pair)) return;
-                const at = new vscode.Range(document.positionAt(pair.keyStart), document.positionAt(pair.keyStart));
-                // Mutating operations (Apply/Destroy) are hidden until the user opts in via settings.
-                const operations = mutatingCommandsEnabled()
-                    ? RELEASE_OPERATIONS
-                    : RELEASE_OPERATIONS.filter(operation => operation.command !== 'helmfile.applyRelease' && operation.command !== 'helmfile.destroyRelease');
-                for (const operation of operations) {
-                    lenses.push(
-                        new vscode.CodeLens(at, {
-                            title: `$(${operation.icon}) ${operation.label}`,
-                            command: operation.command,
-                            arguments: [document.uri, pair.keyStart],
-                        }),
-                    );
-                }
-            });
-
-            // Template inheritance arrows: one lens per line (a line can hold
-            // several `inherit` entries when written inline); multiple targets
-            // open a picker, like the IntelliJ line-marker popup.
-            const inheritItems = inheritanceScalars(source);
-            const parentsByLine = new Map<number, number[]>();
-            for (const item of inheritItems) {
-                const line = document.positionAt(item.scalar.start).line;
-                const starts = parentsByLine.get(line) ?? [];
-                starts.push(item.scalar.start);
-                parentsByLine.set(line, starts);
-            }
-            for (const starts of parentsByLine.values()) {
-                lenses.push(
-                    new vscode.CodeLens(lensRange(document, starts[0], starts[0]), {
-                        title: starts.length === 1 ? '$(arrow-up) parent' : `$(arrow-up) parents ×${starts.length}`,
-                        command: HELMFILE_GOTO_TEMPLATE_PARENT,
-                        arguments: [document.uri, starts],
-                        tooltip: 'Navigate to the parent template declaration',
-                    }),
-                );
-            }
-            walkAll(root, node => {
-                if (node.kind !== 'pair') return;
-                const pair = node as YPair;
-                if (!isTemplateDeclaration(pair) || !pair.key) return;
-                const usages = inheritItems.reduce((count, item) => count + (item.name === pair.key ? 1 : 0), 0);
-                if (usages === 0) return;
-                lenses.push(
-                    new vscode.CodeLens(lensRange(document, pair.keyStart, pair.keyEnd), {
-                        title: `$(arrow-down) ${usages}`,
-                        command: HELMFILE_FIND_TEMPLATE_USAGES,
-                        arguments: [document.uri, pair.keyStart],
-                        tooltip: 'Find template usages',
-                    }),
-                );
-            });
-        }
-        return lenses;
+        const source: SourceFile = { uri: document.uri, text, tree: parseTree(text) };
+        return computeStateLenses(source, this.env.get(), mutatingCommandsEnabled()).map(toLens);
     }
-}
-
-function lensRange(document: vscode.TextDocument, start: number, end: number): vscode.Range {
-    return new vscode.Range(document.positionAt(start), document.positionAt(end));
 }

@@ -14,8 +14,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
-import { offsetRange } from './position';
+import { type Completion, type CompletionKind } from './language';
 import { ancestors, mappingGet, nodeAt, parseTree, rootMappings, scalarPathText, type YMapping, type YPair } from './yamlTree';
 import { templateDeclarations } from './templates';
 import { childKeys, valuesModel, type SourceFile } from './values';
@@ -179,50 +178,42 @@ function relPath(dir: string, base: string, name: string): string {
     return path.relative(base, path.join(dir, name)).split(path.sep).join('/');
 }
 
-function item(label: string, kind: vscode.CompletionItemKind, detail: string): vscode.CompletionItem {
-    const result = new vscode.CompletionItem(label, kind);
-    result.detail = detail;
-    return result;
-}
-
-
-/** Set the replace range on every item so acceptance overwrites the typed text. */
-function withRange(list: vscode.CompletionList, range: vscode.Range): vscode.CompletionList {
-    for (const item of list.items) item.range = range;
-    return list;
+/** Neutral completion item carrying the typed span it replaces. */
+function item(label: string, kind: CompletionKind, detail: string, replace?: { start: number; end: number }): Completion {
+    return replace ? { label, kind, detail, replace } : { label, kind, detail };
 }
 
 /**
  * Smart suggestions for the field value being typed; null when the field
  * is not context-aware (falls through to schema/repository completion).
  */
-export function contextualCompletions(source: SourceFile, offset: number, environment: string): vscode.CompletionList | null {
+export function contextualCompletions(source: SourceFile, offset: number, environment: string): Completion[] | null {
     const field = fieldContextAt(source, offset);
     if (!field) return null;
     const typed = field.typed;
     if (typed.includes('{{')) return null;
     // Values like `fluent-`, `alias/flu` or `./char` contain separators the
     // default word definition splits on — replace the whole typed span.
-    const replace = offsetRange(source.text, offset - typed.length, offset);
+    const replace = { start: offset - typed.length, end: offset };
     const within = (...keys: string[]): boolean => keys.some(key => field.path.includes(key));
     const atRoot = field.path.length === 0;
 
     switch (field.key) {
         case 'needs': {
             if (!within('releases', 'templates')) return null;
-            return withRange(new vscode.CompletionList(releaseNames(source).map(name => item(name, vscode.CompletionItemKind.Reference, 'release in this state')), false), replace);
+            return releaseNames(source).map(name => item(name, 'reference', 'release in this state', replace));
         }
         case 'inherit': {
             if (!within('releases', 'templates')) return null;
-            return withRange(new vscode.CompletionList([...templateDeclarations(source.uri, environment).keys()].map(name => item(name, vscode.CompletionItemKind.Reference, 'template')), false), replace);
+            return [...templateDeclarations(source.uri, environment).keys()].map(name => item(name, 'reference', 'template', replace));
         }
         case 'condition': {
             if (!within('releases', 'templates')) return null;
-            const items = releaseNames(source).map(name => item(`${name}.enabled`, vscode.CompletionItemKind.Reference, 'enabled flag of a release'));
+            const items = releaseNames(source).map(name => item(`${name}.enabled`, 'reference', 'enabled flag of a release', replace));
             const seen = new Set<string>();
             for (const key of topLevelValueKeys(source, environment)) {
                 seen.add(key);
-                items.push(item(`.Values.${key}.enabled`, vscode.CompletionItemKind.Reference, 'values flag'));
+                items.push(item(`.Values.${key}.enabled`, 'reference', 'values flag', replace));
             }
             // Keys merged from values files of the selected environment (the
             // common real-world shape — env `values:` entries are file lists).
@@ -230,13 +221,13 @@ export function contextualCompletions(source: SourceFile, offset: number, enviro
             for (const definition of model ? childKeys(model, '') : []) {
                 if (seen.has(definition.path)) continue;
                 seen.add(definition.path);
-                items.push(item(`.Values.${definition.path}.enabled`, vscode.CompletionItemKind.Reference, 'values flag'));
+                items.push(item(`.Values.${definition.path}.enabled`, 'reference', 'values flag', replace));
             }
-            return withRange(new vscode.CompletionList(items, false), replace);
+            return items;
         }
         case 'kubeContext': {
             if (!within('releases', 'templates', 'environments') && !atRoot) return null;
-            return withRange(new vscode.CompletionList(kubeContexts().map(name => item(name, vscode.CompletionItemKind.EnumMember, 'kubeconfig context')), false), replace);
+            return kubeContexts().map(name => item(name, 'constant', 'kubeconfig context', replace));
         }
         case 'values':
         case 'secrets': {
@@ -245,15 +236,15 @@ export function contextualCompletions(source: SourceFile, offset: number, enviro
             // ancestors of size 1 in {values, bases, helmfiles}). Inline root
             // mappings are key/value, not files — schema keys cover those.
             if (!within('releases', 'templates', 'environments') && !(atRoot && field.sequenceValue)) return null;
-            return withRange(fileCompletions(source, typed, YAML_EXTENSIONS, 'values file', false), replace);
+            return fileCompletions(source, typed, YAML_EXTENSIONS, 'values file', false, replace);
         }
         case 'bases': {
             if (!atRoot) return null;
-            return withRange(fileCompletions(source, typed, YAML_EXTENSIONS, 'base state', false), replace);
+            return fileCompletions(source, typed, YAML_EXTENSIONS, 'base state', false, replace);
         }
         case 'helmfiles': {
             if (!atRoot) return null;
-            return withRange(fileCompletions(source, typed, YAML_EXTENSIONS, 'state file', false), replace);
+            return fileCompletions(source, typed, YAML_EXTENSIONS, 'state file', false, replace);
         }
         case 'path': {
             if (field.path[0] !== 'helmfiles') return null;
@@ -262,7 +253,7 @@ export function contextualCompletions(source: SourceFile, offset: number, enviro
         case 'chart': {
             if (!within('releases', 'dependencies', 'templates')) return null;
             if (!typed.startsWith('.')) return null;
-            return withRange(localChartCompletions(source, typed), replace);
+            return localChartCompletions(source, typed, replace);
         }
         case 'name': {
             // `- name: key` under a release's `set:`/`setString:` list:
@@ -277,8 +268,8 @@ export function contextualCompletions(source: SourceFile, offset: number, enviro
             if (!context || !context.tree) return null;
             const items = chartValuePaths(context)
                 .filter(candidate => !typed || candidate.key.startsWith(typed))
-                .map(candidate => item(candidate.key, vscode.CompletionItemKind.Property, candidate.preview ? `chart default: ${candidate.preview.slice(0, 80)}` : `chart value (${chart})`));
-            return withRange(new vscode.CompletionList(items, false), replace);
+                .map(candidate => item(candidate.key, 'property', candidate.preview ? `chart default: ${candidate.preview.slice(0, 80)}` : `chart value (${chart})`, replace));
+            return items;
         }
         default:
             return null;
@@ -296,12 +287,12 @@ function releaseMappingAt(source: SourceFile, offset: number): YMapping | null {
 }
 
 /** Directory suggestions for `chart: ./…` local chart references. */
-export function localChartCompletions(source: SourceFile, typed: string): vscode.CompletionList {
-    return fileCompletions(source, typed, YAML_EXTENSIONS, 'local chart directory', true);
+export function localChartCompletions(source: SourceFile, typed: string, replace?: { start: number; end: number }): Completion[] {
+    return fileCompletions(source, typed, YAML_EXTENSIONS, 'local chart directory', true, replace);
 }
 
-function fileCompletions(source: SourceFile, typed: string, extensions: readonly string[], label: string, directoriesOnly: boolean): vscode.CompletionList {
-    const items: vscode.CompletionItem[] = [];
+function fileCompletions(source: SourceFile, typed: string, extensions: readonly string[], label: string, directoriesOnly: boolean, replace?: { start: number; end: number }): Completion[] {
+    const items: Completion[] = [];
     const seen = new Set<string>();
     for (const suggestion of stateRelativeFiles(source.uri.fsPath, extensions, typed)) {
         const insert = suggestion.directory ? suggestion.relative + '/' : suggestion.relative;
@@ -313,7 +304,7 @@ function fileCompletions(source: SourceFile, typed: string, extensions: readonly
             if (!insert.startsWith(typed) && !lastSegment.startsWith(typed)) continue;
         }
         seen.add(insert);
-        items.push(item(insert, suggestion.directory ? vscode.CompletionItemKind.Folder : vscode.CompletionItemKind.File, suggestion.directory ? 'directory' : label));
+        items.push(item(insert, suggestion.directory ? 'module' : 'file', suggestion.directory ? 'directory' : label, replace));
     }
-    return new vscode.CompletionList(items, false);
+    return items;
 }
