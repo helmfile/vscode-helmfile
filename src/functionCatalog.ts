@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 
 export interface HelmfileFunction {
     readonly name: string;
@@ -151,11 +150,12 @@ export function findFunction(name: string): HelmfileFunction | undefined {
     return FUNCTIONS.get(name);
 }
 
-export function functionMarkdown(fn: HelmfileFunction): vscode.MarkdownString {
-    const md = new vscode.MarkdownString(undefined, true);
-    md.appendMarkdown('```\n' + fn.signature + '\n```');
-    md.appendMarkdown('\n' + fn.description);
-    md.appendCodeblock('{{ ' + fn.example + ' }}', 'helmfile');
-    md.appendMarkdown(`\n\n${fn.family} · [Reference](${fn.url})`);
-    return md;
+/** Markdown documentation for a catalog function (plain string, editor-neutral). */
+export function functionMarkdown(fn: HelmfileFunction): string {
+    let value = '';
+    value += '```\n' + fn.signature + '\n```';
+    value += '\n' + fn.description;
+    value += `\n\`\`\`helmfile\n{{ ${fn.example} }}\n\`\`\`\n`;
+    value += `\n\n${fn.family} · [Reference](${fn.url})`;
+    return value;
 }

@@ -9,17 +9,13 @@ import { chartCallsFor, chartDefinesFor, templateCallAt } from './chartDefines';
 import { chartModelFor } from './chartModel';
 import type { ChartTemplateContext } from './chartContext';
 import { offsetRange } from './position';
+import { matchAll } from './language';
+import { valuePathAt } from './valuePath';
 import { nodeAt, pairKeyAt, parseTree, scalarPathText, walkAll, type YPair } from './yamlTree';
-import { allDefinitions, contentStamp, isHelmfileName, readSource, resolveValueFiles, valuesKeyPath, type SourceFile, type ValuesDefinition } from './values';
+import { allDefinitions, contentStamp, isHelmfileName, readSource, resolveValueFiles, type SourceFile, type ValuesDefinition } from './values';
 import { EnvironmentService } from './settings';
 import { alias, isChartField, isDeclaration as isRepositoryDeclaration, repositoryModel } from './repositories';
 import { isDeclaration as isTemplateDeclaration, isInheritance, parents, templateDeclarations, inheritanceScalars } from './templates';
-
-export interface ValuePathReference {
-    /** Definition key path joined with the unit separator. */
-    readonly key: string;
-    readonly range: vscode.Range;
-}
 
 export interface PathFileReference {
     readonly files: readonly vscode.Uri[];
@@ -44,14 +40,6 @@ export interface InheritanceReference {
     readonly range: vscode.Range;
 }
 
-/** `$.Values.a.b` / `.StateValues.a` / `.Environment.Values.a` inside an action. */
-const ROOT_PATH = /(\$?\.(?:Values|StateValues|Environment\.Values)\.[A-Za-z0-9_.]*)/g;
-/** `index .Values "key.with.dots"` quoted keys. */
-const INDEX_CALL = /\bindex\s+(\$?\.(?:Values|StateValues|Environment\.Values)(?:\.[A-Za-z0-9_]+)*)((?:\s+"(?:[^"\\]|\\.)*")+)/g;
-/** `get .Values "key.with.dots" [default]` call form. */
-const GET_CALL = /\bget\s+(\$?\.(?:Values|StateValues|Environment\.Values)(?:\.[A-Za-z0-9_]+)*)\s+"((?:[^"\\]|\\.)*)"(?:\s+(?:"(?:[^"\\]|\\.)*"|true|false|nil|\d+(?:\.\d+)?))?/g;
-/** `.Values | get "key.with.dots" [default]` pipeline form. */
-const GET_PIPE = /(\$?\.(?:Values|StateValues|Environment\.Values)(?:\.[A-Za-z0-9_]+)*)\s*\|\s*get\s+"((?:[^"\\]|\\.)*)"(?:\s+(?:"(?:[^"\\]|\\.)*"|true|false|nil|\d+(?:\.\d+)?))?/g;
 /** String literal argument of readFile/isFile/isDir inside actions. */
 const FILE_FUNCTION = /\b(?:readFile|isFile|isDir)\s*\(\s*(?:"([^"\\]|\\.)*"|'([^'\\]|\\.)*')/g;
 
@@ -158,57 +146,6 @@ export class HelmfileReferencesProvider implements vscode.ReferenceProvider {
     }
 }
 
-/** `.Values` / `.StateValues` / `.Environment.Values` roots carry no own definition key. */
-function stripValueRoot(segments: string[]): string[] {
-    const rest = [...segments];
-    if (rest[0] === 'Environment' && rest[1] === 'Values') rest.splice(0, 2);
-    else if (rest[0] === 'Values' || rest[0] === 'StateValues') rest.splice(0, 1);
-    return rest;
-}
-
-/**
- * Find the values path token containing `offset` inside a Go template action,
- * including `index .Values "quoted"` keys.
- */
-export function valuePathAt(text: string, offset: number): ValuePathReference | null {
-    const action = TemplateScanner.at(text, offset);
-    if (!action) return null;
-    const body = text.slice(action.bodyStart, action.bodyEnd);
-    const bodyOffset = offset - action.bodyStart;
-
-    for (const match of matchAll(INDEX_CALL, body)) {
-        const base = match[1];
-        const quoted = match[2];
-        if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
-        const segments = [...stripValueRoot(base.replace(/^\$?/, '').split('.').filter(segment => segment.length > 0)), ...splitQuoted(quoted)];
-        const key = valuesKeyPath(segments);
-        return { key, range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + match[0].length) };
-    }
-
-    for (const pattern of [GET_PIPE, GET_CALL]) {
-        for (const match of matchAll(pattern, body)) {
-            if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
-            const base = match[1];
-            const quotedKey = match[2];
-            const segments = [...stripValueRoot(base.replace(/^\$?/, '').split('.').filter(segment => segment.length > 0)), ...quotedKey.split('.')];
-            const key = valuesKeyPath(segments);
-            return { key, range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + match[0].length) };
-        }
-    }
-
-    for (const match of matchAll(ROOT_PATH, body)) {
-        if (bodyOffset < (match.index ?? 0) || bodyOffset > (match.index ?? 0) + match[0].length) continue;
-        const token = match[0];
-        const segments = stripValueRoot(
-            token
-                .replace(/^\$?/, '')
-                .split('.')
-                .filter(segment => segment.length > 0),
-        );
-        return { key: valuesKeyPath(segments), range: offsetRange(text, action.bodyStart + (match.index ?? 0), action.bodyStart + (match.index ?? 0) + token.length) };
-    }
-    return null;
-}
 
 /** String argument of readFile/isFile/isDir containing `offset`. */
 export function pathFileReferenceAt(uri: vscode.Uri, text: string, offset: number, environment: string): PathFileReference | null {
@@ -396,23 +333,6 @@ function chartPairs(source: SourceFile): { pair: YPair; value: { start: number; 
         });
     }
     return result;
-}
-
-function matchAll(pattern: RegExp, text: string): RegExpMatchArray[] {
-    const result: RegExpMatchArray[] = [];
-    pattern.lastIndex = 0;
-    let match = pattern.exec(text);
-    while (match) {
-        result.push(match);
-        match = pattern.exec(text);
-    }
-    return result;
-}
-
-function splitQuoted(quoted: string): string[] {
-    const segments: string[] = [];
-    for (const match of matchAll(/"((?:[^"\\]|\\.)*)"/g, quoted)) segments.push(match[1].replace(/\\(.)/g, '$1'));
-    return segments;
 }
 
 function unquote(raw: string): string {

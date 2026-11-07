@@ -21,7 +21,7 @@ import { repositoryModel, query, alias } from '../src/repositories';
 import { ChartIndex, compareVersions } from '../src/chartIndex';
 import { parseTemplateOutput, parseDiffOutput, diffPartial, OutputViewer, disposeOutputProvider } from '../src/outputs';
 import { commandProblem, buildCommand, protectionProblem, isProtectedEnvironment, selectorOf } from '../src/execution';
-import { valuePathAt } from '../src/references';
+import { valuePathAt } from '../src/valuePath';
 import { schemaContext } from '../src/schema';
 import { parseCompletionPath, parseTree } from '../src/yamlTree';
 import { tokenizeAction, SEMANTIC_TOKEN_TYPES, HelmfileSemanticTokensProvider } from '../src/semanticTokens';
@@ -2094,6 +2094,32 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
         && edit.edits.some(e => e.type === 'insert' && e.text === '{{- define "demo.image" -}}\n{{ .Values.tag }}\n{{- end -}}\n'),
     JSON.stringify(edit?.edits));
     eq(buildExtractEdit('   ', { start: 0, end: 3 }, 'x', vscode.Uri.file(deployment)), null, 'extract rejects whitespace-only selection');
+}
+
+// Route B engine extraction: engines are editor-neutral and callable without vscode.
+{
+    for (const engine of ['language.ts', 'valuePath.ts', 'hoverEngine.ts', 'completionEngine.ts', 'functionCatalog.ts']) {
+        const source = fs.readFileSync(path.join(__dirname, '..', 'src', engine), 'utf8');
+        check(`engine ${engine} stays editor-neutral`, !/from 'vscode'/.test(source), 'imports vscode');
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-smoke-'));
+    fs.writeFileSync(path.join(root, 'Chart.yaml'), 'apiVersion: v2\nname: smk\nversion: 0.1.0\n');
+    fs.writeFileSync(path.join(root, 'values.yaml'), 'tag: v1\n');
+    fs.mkdirSync(path.join(root, 'templates'), { recursive: true });
+    const file = path.join(root, 'templates', 'deployment.yaml');
+    fs.writeFileSync(file, '');
+    fs.writeFileSync(file, '{{ .Chart.Name }}');
+
+    const { computeActionCompletions } = require('../src/completionEngine') as typeof import('../src/completionEngine');
+    const fnItems = computeActionCompletions(file, '{{ toY', 7, 'default', { envVars: () => [], stateModel: () => null });
+    check('engine completes template functions', fnItems.some(c => c.label === 'toYaml' && c.kind === 'function'), JSON.stringify(fnItems.slice(0, 3)));
+    const pathItems = computeActionCompletions(file, '{{ .Values.', 11, 'default', { envVars: () => [], stateModel: () => null });
+    check('engine completes chart values', pathItems.some(c => c.label === 'tag'), JSON.stringify(pathItems));
+
+    const { computeHover } = require('../src/hoverEngine') as typeof import('../src/hoverEngine');
+    const hover = computeHover(file, '{{ .Chart.Name }}', 9, 'default', { allDefinitions: () => [], evaluate: () => null });
+    check('engine hovers chart builtins', hover != null && hover.markdown.includes('Name of the chart'), hover?.markdown.slice(0, 80) ?? 'null');
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
