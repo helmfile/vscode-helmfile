@@ -104,7 +104,7 @@ function eq(actual: unknown, expected: unknown, name: string): void {
     check('example envPath found', envPath > 0);
     const files = resolveValueFiles(source, 'values/common.yaml', 'prod');
     eq(files.length, 1, 'resolveValueFiles common.yaml');
-    check('resolved under values/', files[0]?.path.endsWith(path.join('values', 'common.yaml')) === true, files[0]?.path);
+    check('resolved under values/', files[0]?.fsPath.endsWith(path.join('values', 'common.yaml')) === true, files[0]?.fsPath);
 }
 
 // ---------------------------------------------------------------- repositories
@@ -338,7 +338,7 @@ entries:
 {
     const nested = vscode.Uri.file(path.join(EXAMPLES, 'values', 'common.yaml'));
     const state = stateFor(nested);
-    check('stateFor walks up from values/', state?.uri.path.endsWith('helmfile.yaml.gotmpl') === true, state?.uri.path);
+    check('stateFor walks up from values/', state?.uri.fsPath.endsWith('helmfile.yaml.gotmpl') === true, state?.uri.fsPath);
     eq(stateFor(vscode.Uri.file('/tmp/other.yaml')), null, 'stateFor unrelated file');
 
     eq(isStateFileName(path.join('ws', 'helmfile.d', '10-ingress.yaml')), true, 'helmfile.d fragment is a state file');
