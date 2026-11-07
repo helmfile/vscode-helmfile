@@ -2,7 +2,7 @@
     "name": "vscode-helmfile",
     "displayName": "Helmfile",
     "description": "Helmfile state file editing: completion, navigation, repository awareness, environments, and Template/Diff/Apply/Destroy",
-    "version": "0.3.5",
+    "version": "0.3.6",
     "publisher": "helmfile",
     "license": "MIT",
     "repository": {
