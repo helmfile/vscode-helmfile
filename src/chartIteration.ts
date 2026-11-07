@@ -190,6 +190,28 @@ function blockSpans(text: string): BlockSpan[] {
     return spans;
 }
 
+/**
+ * Spans of every conditional block (`if`/`range`/`with`/`define`/`block`).
+ * Content inside one of these may or may not render, so two occurrences
+ * that live in different branches do not necessarily coexist — static
+ * checks must not treat them as duplicates.
+ */
+export function conditionalSpans(text: string): readonly { readonly start: number; readonly end: number }[] {
+    const spans: { start: number; end: number }[] = [];
+    const stack: TemplateAction[] = [];
+    for (const action of TemplateScanner.scan(text)) {
+        const word = headWord(action, text);
+        if (word === 'if' || word === 'range' || word === 'with' || word === 'define' || word === 'block') stack.push(action);
+        else if (word === 'end' && stack.length > 0) {
+            const open = stack.pop() as TemplateAction;
+            spans.push({ start: open.start, end: action.end });
+        }
+    }
+    // Unclosed blocks at EOF still gate everything after them.
+    for (const open of stack) spans.push({ start: open.start, end: text.length });
+    return spans;
+}
+
 function pushSpan(spans: BlockSpan[], open: TemplateAction, end: number, text: string): void {
     const word = headWord(open, text);
     if (word !== 'range' && word !== 'with') return;

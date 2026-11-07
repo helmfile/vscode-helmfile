@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import { TemplateScanner, fillMaskedTemplateKeys, type TemplateAction } from './templateScanner';
 import { chartFileOf, chartTemplateContextFor, chartTemplateDetected, type ChartTemplateContext } from './chartContext';
 import { chartDefinesFor } from './chartDefines';
-import { variableScopeIssues } from './chartIteration';
+import { conditionalSpans, variableScopeIssues } from './chartIteration';
 import { chartModelFor } from './chartModel';
 import { mappingGet, parseTree, scalarPathText, walkAll, type YPair, type YScalar, type YTree } from './yamlTree';
 import { contentStamp, isHelmfileName, type SourceFile } from './values';
@@ -259,23 +259,29 @@ function yamlSyntaxErrors(document: vscode.TextDocument, diagnostics: vscode.Dia
  * actions (`{{ $key }}:`) are skipped — their rendered value is unknowable.
  */
 function duplicateKeyDiagnostics(document: vscode.TextDocument, text: string, tree: YTree, diagnostics: vscode.Diagnostic[]): void {
+    const conditional = conditionalSpans(text);
+    const insideConditional = (offset: number): boolean => conditional.some(span => offset >= span.start && offset <= span.end);
     for (const doc of tree.docs) {
         if (!doc.root) continue;
         walkAll(doc.root, node => {
             if (node.kind !== 'mapping') return;
-            const seen = new Map<string, number>();
+            const seen = new Map<string, { offset: number; conditional: boolean }>();
             for (const pair of node.pairs) {
                 if (!pair.key) continue;
                 const first = seen.get(pair.key);
                 if (first === undefined) {
-                    seen.set(pair.key, pair.keyStart);
+                    seen.set(pair.key, { offset: pair.keyStart, conditional: insideConditional(pair.keyStart) });
                     continue;
                 }
                 if (!text.slice(pair.keyStart, pair.keyEnd).trim()) continue; // templated key
+                // Two occurrences in different conditional branches never
+                // coexist at render time — only unconditional duplicates are
+                // real defects.
+                if (first.conditional || insideConditional(pair.keyStart)) continue;
                 diagnostics.push(
                     new vscode.Diagnostic(
                         new vscode.Range(document.positionAt(pair.keyStart), document.positionAt(pair.keyEnd)),
-                        `Duplicate map key "${pair.key}" — already set at line ${document.positionAt(first).line + 1}`,
+                        `Duplicate map key "${pair.key}" — already set at line ${document.positionAt(first.offset).line + 1}`,
                         vscode.DiagnosticSeverity.Error,
                     ),
                 );
