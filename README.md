@@ -299,8 +299,9 @@ chart-aware assistance inside `<chart>/templates/` files
   `repository:` nor a vendored copy under `charts/` is an error, and a
   pinned `version:` that differs from the vendored copy is a warning.
 - Helmfile state split across a `helmfile.d/` directory is supported:
-  every `*.yaml`/`*.yml` fragment under `helmfile.d/` is claimed and
-  treated as a state file.
+  every `*.yaml`/`*.yml` fragment directly inside `helmfile.d/` is claimed
+  and treated as a state file, and `helmfile.d/` takes precedence over a
+  sibling `helmfile.yaml` — matching helmfile's own lookup.
 
 Chart assistance can be switched off with `helmfile.chartSupport: false`;
 YAML/template syntax checking stays on. Opening a workspace that only

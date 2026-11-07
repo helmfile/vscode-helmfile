@@ -236,8 +236,9 @@ Host),自带 `examples/` 下的示例状态文件。
   `{{ include }}`。
 - `Chart.yaml` 依赖体检:既没有 `repository:` 又没有 `charts/` 下解包副本的
   条目报错;`version:` 与解包副本版本不一致时报警告。
-- 支持拆分在 `helmfile.d/` 目录中的 helmfile 状态:`helmfile.d/` 下所有
-  `*.yaml`/`*.yml` 分片都会被接管并按状态文件处理。
+- 支持拆分在 `helmfile.d/` 目录中的 helmfile 状态:`helmfile.d/` 直接子级的
+  `*.yaml`/`*.yml` 分片会被接管并按状态文件处理;同级同时存在
+  `helmfile.yaml` 时,以 `helmfile.d/` 为准 —— 与 helmfile 自身的查找一致。
 
 可通过 `helmfile.chartSupport: false` 关闭 chart 感知能力;YAML/模板语法检查始终
 保留。只包含 chart(无 helmfile 状态)的工作区同样会激活扩展。

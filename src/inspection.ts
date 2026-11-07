@@ -700,8 +700,14 @@ interface VendoredDependency {
     readonly version: string | null;
 }
 
+/** Version-looking archive suffix: `1.0.0`, `2.31.0-debian-12-r6`, `0.1.0-bb.0` — not `pushgateway-1.0.0`. */
+const ARCHIVE_VERSION = /^v?\d+(?:[.\-+][\w.-]+)*$/;
+
 /** charts/<name>/ directory (with its own Chart.yaml) or a charts/<name>-<version>.tgz archive. */
 function vendoredDependency(chartsDir: string, name: string, version: string, archives: () => string[]): VendoredDependency | null {
+    // Chart names never hold path separators or `.`/`..` — refuse them so the
+    // charts/<name> join cannot resolve outside the chart.
+    if (name === '.' || name === '..' || /[/\\]/.test(name)) return null;
     const dir = path.join(chartsDir, name);
     if (fs.existsSync(path.join(dir, 'Chart.yaml')) || fs.existsSync(path.join(dir, 'Chart.yml'))) {
         try {
@@ -718,7 +724,13 @@ function vendoredDependency(chartsDir: string, name: string, version: string, ar
         if (archives().includes(exact)) return { version };
     }
     const prefix = `${name}-`;
-    const loose = archives().find(archive => archive.startsWith(prefix));
+    // Archive names are `<chart>-<version>.tgz` and chart names may contain
+    // dashes themselves, so only accept a version-looking suffix — `foo-`
+    // must not match `foo-bar-1.0.0.tgz` (a different chart's archive).
+    const loose = archives().find(archive => {
+        if (!archive.startsWith(prefix)) return false;
+        return ARCHIVE_VERSION.test(archive.slice(prefix.length).replace(/\.tgz$/, ''));
+    });
     if (loose) {
         const looseVersion = loose.slice(prefix.length).replace(/\.tgz$/, '');
         return { version: looseVersion || null };
@@ -753,6 +765,7 @@ export function chartYamlDependencyDiagnostics(document: vscode.TextDocument, di
         const namePair = mappingGet(item, 'name');
         const name = namePair?.value?.kind === 'scalar' ? scalarPathText(namePair.value).trim() : '';
         if (!name) continue;
+        if (name.includes('{{')) continue; // templated name — cannot resolve the vendored copy
         const scalarOf = (key: string): string => {
             const pair = mappingGet(item, key);
             return pair?.value?.kind === 'scalar' ? scalarPathText(pair.value).trim() : '';
@@ -775,7 +788,7 @@ export function chartYamlDependencyDiagnostics(document: vscode.TextDocument, di
             diagnostics.push(diagnostic);
             continue;
         }
-        if (version && vendored.version && vendored.version !== version) {
+        if (version && !version.includes('{{') && vendored.version && vendored.version !== version) {
             const diagnostic = new vscode.Diagnostic(range, `Dependency "${name}" pins ${version} but the vendored copy has ${vendored.version} — run helm dependency update`, vscode.DiagnosticSeverity.Warning);
             diagnostic.source = HELMFILE_DIAGNOSTIC_SOURCE;
             diagnostics.push(diagnostic);

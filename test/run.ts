@@ -344,6 +344,7 @@ entries:
     eq(isStateFileName(path.join('ws', 'helmfile.d', '10-ingress.yaml')), true, 'helmfile.d fragment is a state file');
     eq(isStateFileName(path.join('ws', 'helmfile.d', 'app.yml')), true, 'helmfile.d yml fragment');
     eq(isStateFileName(path.join('ws', 'helmfile.d', 'README.md')), false, 'helmfile.d non-yaml is not a state file');
+    eq(isStateFileName(path.join('ws', 'helmfile.d', 'sub', 'frag.yaml')), false, 'nested helmfile.d file is not a state file');
     eq(isStateFileName('helmfile.yaml'), true, 'classic state name');
 
     const hdRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'helmfile-d-'));
@@ -355,6 +356,13 @@ entries:
     fs.writeFileSync(fragValues.fsPath, 'replicas: 2\n');
     const hdState = stateFor(fragValues);
     check('stateFor anchors on helmfile.d fragment', hdState?.uri.fsPath.endsWith(path.join('helmfile.d', '00-defaults.yaml')) === true, hdState?.uri.fsPath);
+
+    // helmfile.d wins over a sibling helmfile.yaml (helmfile ignores the flat
+    // file when the directory exists).
+    fs.writeFileSync(path.join(hdRoot, 'helmfile.yaml'), 'releases:\n  - name: flat\n');
+    const hdState2 = stateFor(fragValues);
+    check('helmfile.d beats sibling helmfile.yaml', hdState2?.uri.fsPath.endsWith(path.join('helmfile.d', '00-defaults.yaml')) === true, hdState2?.uri.fsPath);
+    fs.rmSync(hdRoot, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------- dirty-cache invariant
@@ -1926,6 +1934,22 @@ function httpQuery0(_index: unknown): Parameters<typeof import('../src/completio
     check('pinned version mismatch warns', found.some(d => d.message.includes('"stale"') && d.message.includes('2.0.0') && d.message.includes('1.2.3') && d.severity === 1), JSON.stringify(messages));
     check('archive with exact version stays clean', !messages.some(m => m.includes('"packed"')), JSON.stringify(messages));
     check('archive version mismatch warns', found.some(d => d.message.includes('"oldpacked"') && d.severity === 1), JSON.stringify(messages));
+
+    // Dashed names must not loose-match another chart's archive, and `..` or
+    // path-like names must not escape charts/.
+    fs.writeFileSync(path.join(root, 'charts', 'prometheus-pushgateway-1.0.0.tgz'), 'fake');
+    const dashedManifest = manifest + '\n  - name: prometheus\n    version: 2.0.0\n  - name: ..\n';
+    const dashedDoc = { uri: doc.uri, getText: () => dashedManifest, positionAt: (offset: number) => {
+        const before = dashedManifest.slice(0, offset);
+        const line = (before.match(/\n/g) ?? []).length;
+        return new vscode.Position(line, offset - (before.lastIndexOf('\n') + 1));
+    } } as never;
+    const dashed: Array<{ message: string; severity: number }> = [];
+    chartYamlDependencyDiagnostics(dashedDoc, dashed as never);
+    const dashedMessages = dashed.map(d => d.message);
+    check('dashed sibling archive is not a vendored copy', dashed.some(d => d.message.includes('"prometheus"') && d.message.includes('no repository') && d.severity === 0), JSON.stringify(dashedMessages));
+    check('dotdot dependency name is refused', dashed.some(d => d.message.includes('".."') && d.severity === 0), JSON.stringify(dashedMessages));
+    check('templated dependency name is skipped', (() => { const skip: Array<{ message: string }> = []; chartYamlDependencyDiagnostics({ uri: doc.uri, getText: () => manifest + '\n  - name: {{ .Values.depName }}\n', positionAt: () => new vscode.Position(0, 0) } as never, skip as never); return !skip.some(d => d.message.includes('.Values.depName')); })(), 'templated entries must be skipped');
 
     const emptyDoc = { uri: vscode.Uri.file(path.join(root, 'Chart.yaml')), getText: () => 'apiVersion: v2\nname: host\n', positionAt: () => new vscode.Position(0, 0) } as never;
     const none: Array<{ message: string }> = [];

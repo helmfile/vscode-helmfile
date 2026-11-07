@@ -112,15 +112,15 @@ export function isHelmfileName(name: string): boolean {
 }
 
 /**
- * Helmfile merges every `*.yaml` under a `helmfile.d/` directory into one
- * state; those files are state files regardless of their basename.
+ * Helmfile merges the `*.yaml` files directly inside a `helmfile.d/`
+ * directory into one state (non-recursive, like helmfile's own glob); those
+ * files are state files regardless of their basename.
  * `name` may be a bare filename or a full path.
  */
 export function isStateFileName(name: string): boolean {
     if (STATE_NAMES.includes(path.basename(name))) return true;
     const parts = name.split(/[\\/]/);
-    const dirIndex = parts.lastIndexOf('helmfile.d');
-    return dirIndex >= 0 && dirIndex < parts.length - 1 && /\.ya?ml$/i.test(parts[parts.length - 1]);
+    return parts.length >= 2 && parts[parts.length - 2] === 'helmfile.d' && /\.ya?ml$/i.test(parts[parts.length - 1]);
 }
 
 /* ---------------- state file location ---------------- */
@@ -133,15 +133,8 @@ export function stateFor(uri: vscode.Uri): SourceFile | null {
     for (let depth = 0; depth < MAX_WALK_DEPTH; depth++) {
         const parent = path.dirname(dir);
         if (parent === dir) break;
-        for (const name of STATE_NAMES) {
-            const candidate = path.join(dir, name);
-            if (fs.existsSync(candidate)) {
-                const state = readSource(vscode.Uri.file(candidate));
-                if (state) return state;
-            }
-        }
-        // Values files under a helmfile.d/ layout resolve against the merged
-        // state; anchor on the first fragment as an approximation.
+        // A helmfile.d/ directory wins over a sibling helmfile.yaml —
+        // helmfile ignores the flat file when the directory exists.
         const helmfileD = path.join(dir, 'helmfile.d');
         if (fs.existsSync(helmfileD) && fs.statSync(helmfileD).isDirectory()) {
             const fragment = fs.readdirSync(helmfileD, { withFileTypes: true })
@@ -153,6 +146,15 @@ export function stateFor(uri: vscode.Uri): SourceFile | null {
                 if (state) return state;
             }
         }
+        for (const name of STATE_NAMES) {
+            const candidate = path.join(dir, name);
+            if (fs.existsSync(candidate)) {
+                const state = readSource(vscode.Uri.file(candidate));
+                if (state) return state;
+            }
+        }
+        // Values files under a helmfile.d/ layout resolve against the merged
+        // state; anchor on the first fragment as an approximation.
         dir = parent;
     }
     return self;
